@@ -1,0 +1,7 @@
+node_modules/
+.knowcode/
+*.log
+*.rdb
+.DS_Store
+dist/
+coverage/

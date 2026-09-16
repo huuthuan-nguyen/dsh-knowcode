@@ -1,0 +1,10 @@
+# dsh-knowcode — Unified Code Graph & Knowledge Base bundle patch layer.
+#
+# Mounts the KnowCode tool set with embedded FalkorDB for both code AST and documentation.
+- insert:
+    - id: knowcode
+      name: 'dsh-knowcode'
+      config:
+        daemonPort: 48123
+        dataDir: .knowcode
+        blastRadiusMaxDepth: 3
