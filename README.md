@@ -215,6 +215,27 @@ knowcode stop .
 
 `dsh-knowcode` được thiết kế để hoạt động mượt mà trên tất cả các hệ điều hành và kiến trúc chip:
 
+> ### ⚠️ Bắt buộc: Cài đặt Git LFS trước khi clone
+> Các binary FalkorDB embedded (`*.so`, `*.dylib`, `redis-server`) được lưu trữ bằng **Git LFS** để tránh phình lịch sử git.
+> Nếu bạn clone mà **chưa cài Git LFS**, các file này sẽ chỉ là *pointer file* dạng text (~130 bytes) và database sẽ không khởi động được.
+> ```bash
+> # macOS
+> brew install git-lfs
+> # Ubuntu / Debian / WSL2
+> sudo apt-get install -y git-lfs
+> # Windows (PowerShell)
+> winget install GitHub.GitLFS
+>
+> git lfs install        # bắt buộc chạy 1 lần cho mỗi máy
+> git clone git@github.com:huuthuan-nguyen/dsh-knowcode.git
+> ```
+> **Đã clone rồi mà thiếu binary?** Chỉ cần tải lại:
+> ```bash
+> git lfs install && git lfs pull
+> ```
+> Kiểm tra nhanh: `file bin/linux-x64/falkordb.so` phải trả về `ELF 64-bit ... shared object`,
+> nếu trả về `ASCII text` nghĩa là LFS chưa được pull.
+
 | Nền tảng (Platform & Arch) | Trạng thái trong `bin/` | Cơ chế Chạy | Chi tiết Cài đặt |
 |---|:---:|---|---|
 | 🍏 **macOS Apple Silicon** (`darwin-arm64` M1/M2/M3/M4) | ✅ **Bundled sẵn** | **Native 100% Embedded** | Không cần cài đặt gì thêm (Zero-config). Đã kèm `redis-server`, `falkordb.so`, `libomp`. |
