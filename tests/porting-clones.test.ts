@@ -35,7 +35,7 @@ test('AST Token Normalizer & Clone Detector Unit Test', () => {
   assert.strictEqual(dice, 1.0);
 });
 
-test('v1.2 Cross-Paradigm Blueprint, 3rd-Party Slice & Clone Hunter', async () => {
+test('Cross-Paradigm Blueprint, 3rd-Party Slice & Clone Hunter', async () => {
   if (existsSync(TEST_DIR)) {
     rmSync(TEST_DIR, { recursive: true, force: true });
   }

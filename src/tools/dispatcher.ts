@@ -106,7 +106,7 @@ export async function executeKnowCodeTool(
     code_audit_git_diff: 'git_diff_impact',
     git_diff_impact: 'git_diff_impact',
 
-    // v1.2: Cross-Paradigm, 3rd-party Slice, Clone Hunter
+    // Cross-paradigm porting, 3rd-party slicing, and clone detection
     code_generate_cross_paradigm_porting_blueprint: 'cross_paradigm_blueprint',
     code_oop_to_rust: 'cross_paradigm_blueprint',
     code_port_to_rust: 'cross_paradigm_blueprint',
@@ -124,7 +124,7 @@ export async function executeKnowCodeTool(
     code_code_clones: 'similar_functions',
     similar_functions: 'similar_functions',
 
-    // v1.3: Bidirectional Spec-to-Code Flow Traceability
+    // Bidirectional spec-to-code flow traceability
     spec_find_code_flow_for_feature: 'spec_code_flow',
     spec_to_code_flow: 'spec_code_flow',
     feature_code_flow: 'spec_code_flow',
@@ -137,7 +137,7 @@ export async function executeKnowCodeTool(
     feature_for_symbol: 'symbol_spec_features',
     symbol_spec_features: 'symbol_spec_features',
 
-    // v1.4: Polyglot Contract-to-Storage Mapping
+    // Polyglot contract-to-storage mapping
     schema_map_contract_to_storage: 'contract_storage_mapping',
     schema_map_contract: 'contract_storage_mapping',
     contract_to_db: 'contract_storage_mapping',

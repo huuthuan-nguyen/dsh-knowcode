@@ -41,7 +41,7 @@ Traditional AI agent search tools rely on naive lexical search (`grep`) or flat 
 
 ---
 
-## 🧰 The 25 Agent Tools (v1.4)
+## 🧰 The 25 Agent Tools
 
 Every tool is engineered for **LLM Function Calling and Semantic Intent Matching** on large codebases:
 
@@ -79,7 +79,7 @@ Every tool is engineered for **LLM Function Calling and Semantic Intent Matching
   - *Purpose*: SEMANTIC & STRUCTURAL CODE CLONE HUNTER. Detects duplicate or near-duplicate functions across the codebase (Type-1 exact clones and Type-2 variable-renamed clones) using normalized AST token stream fingerprinting. Uncovers copy-pasted "dirty code" where logic and control flow are identical but variable names differ, proposing unified abstractions to eliminate technical debt.
   - *When to use*: Codebase deduplication, technical debt cleanup, and refactoring shared subroutines.
 
-### 🔄 3. Cross-Language & Paradigm Porting (v1.2)
+### 🔄 3. Cross-Language & Paradigm Porting
 - **`code_extract_symbol_porting_contract`** *(alias: `code_porting_contract`)*
   - *Purpose*: CROSS-LANGUAGE PORTING ACCELERATOR. Extracts the complete language-agnostic interface blueprint of a class, struct, or module: exported signatures, member fields, enclosed methods, external callee dependencies, governing ADR architectural rules, and test suites.
   - *When to use*: Porting code from one language to another (e.g., Python to Go, TypeScript to Rust) with 100% semantic fidelity.
@@ -92,7 +92,7 @@ Every tool is engineered for **LLM Function Calling and Semantic Intent Matching
   - *Purpose*: ZERO-DEPENDENCY SLIM POLYFILL ACCELERATOR. Identifies the exact subset of a 3rd-party library actually invoked by the codebase. Eliminates the 95% unused library surface and outputs a minimal functional specification and method contract so an AI Agent or developer can re-implement the necessary features from scratch in the target language without bloated external dependencies.
   - *When to use*: Migrating code when the target language lacks an equivalent 3rd-party library.
 
-### 📚 4. Bidirectional Spec 🔁 Code Traceability & Knowledge (v1.3)
+### 📚 4. Bidirectional Spec 🔁 Code Traceability & Knowledge
 - **`spec_find_code_flow_for_feature`** *(alias: `spec_to_code_flow`, `feature_code_flow`, `code_feature_flow`)*
   - *Purpose*: BIDIRECTIONAL TRACEABILITY (Spec ➔ Code Flow). Discovers all functions, classes, and downstream call-flows in the codebase that implement a feature specified in `*.md` documentation, PRD, or architecture specs. Traverses execution flow from entry points to leaf services and generates an ASCII / Mermaid execution diagram.
   - *When to use*: Onboarding a feature, verifying whether a specification in `*.md` has been fully implemented in code, or locating the entire execution path of a user story.
@@ -109,7 +109,7 @@ Every tool is engineered for **LLM Function Calling and Semantic Intent Matching
   - *Purpose*: Retrieves the full content, heading hierarchy, and architectural rules for a specific documentation file or ADR title.
   - *When to use*: Understanding why an architectural decision was made (the "Why") before refactoring existing code patterns.
 
-### 🗄️ 5. Polyglot Contracts & Storage Traceability (v1.4)
+### 🗄️ 5. Polyglot Contracts & Storage Traceability
 - **`schema_map_contract_to_storage`** *(alias: `schema_map_contract`, `contract_to_db`, `map_contract_to_storage`)*
   - *Purpose*: POLYGLOT CONTRACT-TO-STORAGE ALIGNMENT. Maps any external data contract (XML XSD, JSON OpenAPI/Swagger, gRPC Protobuf) to polyglot storage backends across 7 database families (SQL, MongoDB, Redis, Elasticsearch, Vector DB, TSDB, Graph DB). Produces a field-level mapping matrix, detects type discrepancies (e.g. numeric overflow, BSON ObjectId vs UUID, dense vector dimensions), and flags unmapped/orphan attributes.
   - *When to use*: Verifying end-to-end data lineage from API contracts to storage, discovering unpersisted fields, or validating type safety across microservice boundaries.
@@ -118,7 +118,7 @@ Every tool is engineered for **LLM Function Calling and Semantic Intent Matching
   - *Purpose*: POLYGLOT STORAGE MIGRATION BLAST RADIUS. Analyzes the breaking impact of altering, dropping, or renaming an attribute in SQL tables, MongoDB collections, Elasticsearch indices, or Vector DB collections. Detects all affected external contracts (XML/JSON/gRPC), application DAOs/queries, and mapped test suites.
   - *When to use*: Running schema migrations, database refactorings, or dropping columns to prevent breaking mobile/web clients or partner integrations.
 
-### 🔍 6. Advanced Call Path, Architecture & Search (v1.1)
+### 🔍 6. Advanced Call Path, Architecture & Search
 - **`code_find_call_path_between_symbols`** *(alias: `code_call_path`, `code_trace_call_path`)*
   - *Purpose*: Traces the shortest call invocation path between two functions or methods across the entire codebase graph (up to 12 hops). Traces multi-hop execution flow from entry points to downstream services, helping verify architectural layering, security boundaries, and dataflow paths.
   - *When to use*: Verifying if an API route reaches a critical downstream function (e.g. `chargePayment` or `deleteUser`) and observing all intermediate transit points.

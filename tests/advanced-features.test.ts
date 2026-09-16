@@ -42,7 +42,7 @@ new file mode 100644
   assert.strictEqual(parsed[1].changedLines[0].end, 5);
 });
 
-test('v1.1 Advanced Features: Call Path, Subtypes, Symbol Search, Dead Code in FalkorDB', async () => {
+test('Advanced Features: Call Path, Subtypes, Symbol Search, Dead Code in FalkorDB', async () => {
   if (existsSync(TEST_DIR)) {
     rmSync(TEST_DIR, { recursive: true, force: true });
   }

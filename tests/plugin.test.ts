@@ -50,23 +50,23 @@ test('Cordis plugin registration and tools verification', () => {
   assert.ok(toolNames.includes('knowcode_trigger_incremental_reindex'));
   assert.ok(toolNames.includes('knowcode_execute_custom_cypher_query'));
 
-  // Verify the 5 v1.1 tools
+  // Verify call path, subtype, symbol search, dead code, and git diff tools
   assert.ok(toolNames.includes('code_find_call_path_between_symbols'));
   assert.ok(toolNames.includes('code_find_implementations_and_subtypes'));
   assert.ok(toolNames.includes('code_search_symbols_by_pattern'));
   assert.ok(toolNames.includes('code_find_unused_dead_symbols'));
   assert.ok(toolNames.includes('code_analyze_git_diff_semantic_impact'));
 
-  // Verify the 3 v1.2 tools
+  // Verify cross-paradigm porting, 3rd-party slice, and clone detection tools
   assert.ok(toolNames.includes('code_generate_cross_paradigm_porting_blueprint'));
   assert.ok(toolNames.includes('code_extract_third_party_usage_slice'));
   assert.ok(toolNames.includes('code_find_similar_duplicate_functions'));
 
-  // Verify the 2 v1.3 tools
+  // Verify bidirectional spec-to-code traceability tools
   assert.ok(toolNames.includes('spec_find_code_flow_for_feature'));
   assert.ok(toolNames.includes('code_find_spec_features_for_symbol'));
 
-  // Verify the 2 v1.4 tools
+  // Verify polyglot contract-to-storage tools
   assert.ok(toolNames.includes('schema_map_contract_to_storage'));
   assert.ok(toolNames.includes('schema_analyze_storage_migration_impact'));
 
