@@ -139,7 +139,7 @@ Every tool is engineered for **LLM Function Calling and Semantic Intent Matching
   - *Purpose*: ONE-CLICK REGRESSION AUDIT. Analyzes uncommitted git working tree changes (or changes against a base commit/branch), maps changed line ranges to AST symbols, computes transitive callers at risk, and identifies all automated test suites to run before commit or PR creation.
   - *When to use*: Pre-commit safety check to verify zero regressions before concluding a coding task.
 
-### ⚡ 6. Diagnostics & Power Queries
+### ⚡ 7. Diagnostics & Power Queries
 - **`knowcode_check_index_health_and_stats`** *(alias: `knowcode_status`)*
   - *Purpose*: Checks graph health, number of indexed files/symbols/calls/docs, daemon freshness, and memory statistics.
   - *When to use*: Run once per session to confirm index freshness.
@@ -211,13 +211,13 @@ knowcode stop .
 
 ---
 
-## 💻 Platform Support & Execution Guide (Hướng dẫn Chạy theo Nền tảng)
+## 💻 Platform Support & Execution Guide
 
-`dsh-knowcode` được thiết kế để hoạt động mượt mà trên tất cả các hệ điều hành và kiến trúc chip:
+`dsh-knowcode` is designed to run smoothly across all major operating systems and CPU architectures:
 
-> ### ⚠️ Bắt buộc: Cài đặt Git LFS trước khi clone
-> Các binary FalkorDB embedded (`*.so`, `*.dylib`, `redis-server`) được lưu trữ bằng **Git LFS** để tránh phình lịch sử git.
-> Nếu bạn clone mà **chưa cài Git LFS**, các file này sẽ chỉ là *pointer file* dạng text (~130 bytes) và database sẽ không khởi động được.
+> ### ⚠️ Required: install Git LFS before cloning
+> The embedded FalkorDB binaries (`*.so`, `*.dylib`, `redis-server`) are stored through **Git LFS** to keep the git history small.
+> If you clone **without Git LFS installed**, these files are just text *pointer files* (~130 bytes) and the database will fail to start.
 > ```bash
 > # macOS
 > brew install git-lfs
@@ -226,91 +226,91 @@ knowcode stop .
 > # Windows (PowerShell)
 > winget install GitHub.GitLFS
 >
-> git lfs install        # bắt buộc chạy 1 lần cho mỗi máy
+> git lfs install        # required once per machine
 > git clone git@github.com:huuthuan-nguyen/dsh-knowcode.git
 > ```
-> **Đã clone rồi mà thiếu binary?** Chỉ cần tải lại:
+> **Already cloned but missing the binaries?** Just fetch them again:
 > ```bash
 > git lfs install && git lfs pull
 > ```
-> Kiểm tra nhanh: `file bin/linux-x64/falkordb.so` phải trả về `ELF 64-bit ... shared object`,
-> nếu trả về `ASCII text` nghĩa là LFS chưa được pull.
+> Quick check: `file bin/linux-x64/falkordb.so` must report `ELF 64-bit ... shared object`.
+> If it reports `ASCII text`, the LFS objects have not been pulled yet.
 
-| Nền tảng (Platform & Arch) | Trạng thái trong `bin/` | Cơ chế Chạy | Chi tiết Cài đặt |
+| Platform (OS & Arch) | Status in `bin/` | Execution Path | Setup Notes |
 |---|:---:|---|---|
-| 🍏 **macOS Apple Silicon** (`darwin-arm64` M1/M2/M3/M4) | ✅ **Bundled sẵn** | **Native 100% Embedded** | Không cần cài đặt gì thêm (Zero-config). Đã kèm `redis-server`, `falkordb.so`, `libomp`. |
-| 🐧 **Linux x64** (`linux-x64` Intel/AMD 64-bit) | ✅ **Bundled sẵn** | **Native 100% Embedded** | Không cần cài đặt gì thêm (Zero-config). Đã kèm `redis-server` và `falkordb.so`. |
-| 🐧 **Linux ARM64** (`linux-arm64` Graviton, Pi 4/5) | 🔄 **Docker / External** | **Docker hoặc Custom Binary** | Khởi động qua Docker hoặc đặt binary vào `bin/linux-arm64/`. |
-| 🪟 **Windows x64** (Intel/AMD) | ⚠️ **Cần WSL2 hoặc Docker** | **WSL2 (Khuyên dùng) hoặc Docker** | Chạy trong WSL2 Ubuntu hoặc Docker Desktop. |
-| 🪟 **Windows ARM64** (Snapdragon Copilot+ PC) | ⚠️ **Cần WSL2 hoặc Docker** | **WSL2 ARM64 hoặc Docker** | Chạy trong WSL2 Ubuntu ARM64 hoặc Docker Desktop. |
+| 🍏 **macOS Apple Silicon** (`darwin-arm64` M1/M2/M3/M4) | ✅ **Bundled** | **Native, 100% embedded** | Zero-config. Ships `redis-server`, `falkordb.so`, `libomp`. |
+| 🐧 **Linux x64** (`linux-x64` Intel/AMD 64-bit) | ✅ **Bundled** | **Native, 100% embedded** | Zero-config. Ships `redis-server` and `falkordb.so`. |
+| 🐧 **Linux ARM64** (`linux-arm64` Graviton, Pi 4/5) | 🔄 **Docker / external** | **Docker or custom binary** | Run via Docker, or drop binaries into `bin/linux-arm64/`. |
+| 🪟 **Windows x64** (Intel/AMD) | ⚠️ **Requires WSL2 or Docker** | **WSL2 (recommended) or Docker** | Run inside WSL2 Ubuntu or Docker Desktop. |
+| 🪟 **Windows ARM64** (Snapdragon Copilot+ PC) | ⚠️ **Requires WSL2 or Docker** | **WSL2 ARM64 or Docker** | Run inside WSL2 Ubuntu ARM64 or Docker Desktop. |
 
 ---
 
-### 1. Chạy trên macOS (M1/M2/M3/M4) & Linux x64
-Hệ thống **hoàn toàn tự động (Zero-config)**:
+### 1. macOS (M1/M2/M3/M4) & Linux x64
+Fully automatic, **zero-config**:
 ```bash
-# Build và chạy trực tiếp
+# Build and run the test suite
 pnpm run build
 pnpm run test
 
-# Index workspace
+# Index the workspace
 knowcode index .
 
-# Khởi động daemon nền
+# Start the background daemon
 knowcode serve .
 ```
 
 ---
 
-### 2. Chạy trên Linux ARM64 (AWS Graviton, Raspberry Pi 4/5)
-FalkorDB cung cấp image đa kiến trúc chính thức (`linux/arm64`):
-- **Cách 1: Khởi động qua Docker (Nhanh nhất)**:
+### 2. Linux ARM64 (AWS Graviton, Raspberry Pi 4/5)
+FalkorDB publishes official multi-arch images (`linux/arm64`):
+- **Option 1: Run via Docker (fastest)**:
   ```bash
   docker run -d -p 6379:6379 -v knowcode_data:/data falkordb/falkordb:latest
   export FALKORDB_URL=redis://127.0.0.1:6379
   knowcode serve .
   ```
-- **Cách 2: Sử dụng Embedded Binary**:
-  Biên dịch hoặc copy `redis-server` và `falkordb.so` kiến trúc ARM64 vào `bin/linux-arm64/`. Hệ thống sẽ tự động phát hiện và chạy embedded mà không cần Docker.
+- **Option 2: Use embedded binaries**:
+  Compile or copy the ARM64 `redis-server` and `falkordb.so` into `bin/linux-arm64/`. KnowCode detects them automatically and runs fully embedded — no Docker required.
 
 ---
 
-### 3. Chạy trên Windows (Windows x64 & Windows ARM64 Snapdragon)
+### 3. Windows (Windows x64 & Windows ARM64 Snapdragon)
 
-> **Lưu ý Kỹ thuật**: FalkorDB là Redis Module viết bằng C/Rust và GraphBLAS dựa trên chuẩn POSIX (`pthreads`, `dlopen`, `sys/mman`). Bản thân Redis chính thức đã dừng port native Windows (`.exe`) từ Redis 3.x, trong khi FalkorDB yêu cầu Redis 7.2+ Module API. Do đó, FalkorDB không có file `.exe` chạy trực tiếp trên Windows kernel.
+> **Technical note**: FalkorDB is a Redis module written in C/Rust and backed by GraphBLAS, built on POSIX primitives (`pthreads`, `dlopen`, `sys/mman`). Redis itself dropped its native Windows (`.exe`) port after Redis 3.x, while FalkorDB requires the Redis 7.2+ module API. FalkorDB therefore ships no `.exe` that runs directly on the Windows kernel.
 
-Để chạy mượt mà nhất trên Windows, bạn chọn 1 trong 2 cách sau:
+For the smoothest experience on Windows, pick one of the two options below:
 
-#### 🌟 Cách 1: Chạy trong WSL2 (Windows Subsystem for Linux) — *Khuyên dùng*
-WSL2 cung cấp nhân Linux thực sự bên trong Windows, cho phép tận dụng 100% hiệu năng của binary Linux embedded:
+#### 🌟 Option 1: Run inside WSL2 (Windows Subsystem for Linux) — *recommended*
+WSL2 provides a real Linux kernel inside Windows, so you get the full performance of the embedded Linux binaries:
 ```bash
-# Trong terminal Ubuntu của WSL2:
+# Inside your WSL2 Ubuntu terminal:
 git clone <your-repo>
 cd dsh-knowcode
 pnpm install
 pnpm run build
 
-# Chạy trực tiếp (sử dụng binary bin/linux-x64 hoặc bin/linux-arm64):
+# Run directly (using the bin/linux-x64 or bin/linux-arm64 binaries):
 knowcode index .
 knowcode serve .
 ```
 
-#### 🐳 Cách 2: Chạy qua Docker Desktop for Windows
-Nếu muốn chạy trực tiếp trên Windows PowerShell/CMD mà không dùng WSL2 cho Node:
-1. Mở PowerShell và khởi động container FalkorDB:
+#### 🐳 Option 2: Run through Docker Desktop for Windows
+If you prefer to keep Node on native Windows (PowerShell/CMD) without WSL2:
+1. Open PowerShell and start the FalkorDB container:
    ```powershell
    docker run -d -p 6379:6379 -v knowcode_data:/data falkordb/falkordb:latest
    ```
-2. Đặt biến môi trường trỏ đến container:
+2. Point the environment variable at the container:
    ```powershell
    $env:FALKORDB_URL="redis://127.0.0.1:6379"
    ```
-3. Khởi động KnowCode hoặc DeepSeek Harness:
+3. Start KnowCode or DeepSeek Harness:
    ```powershell
    knowcode index .
    knowcode serve .
    ```
-   Hệ thống sẽ tự động nhận diện `FALKORDB_URL` và kết nối trực tiếp qua loopback TCP mà không cần nạp binary cục bộ.
+   KnowCode detects `FALKORDB_URL` automatically and connects over loopback TCP without loading any local binary.
 
 ---
 
