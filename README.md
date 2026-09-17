@@ -1,5 +1,10 @@
 # ⚡ DSH-KnowCode: Unified Code Graph & Knowledge Base for DeepSeek Harness
 
+[![GitHub release](https://img.shields.io/github/v/release/huuthuan-nguyen/dsh-knowcode)](https://github.com/huuthuan-nguyen/dsh-knowcode/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![DeepSeek Harness plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
+[![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f)](https://github.com/topics/dsh-plugin)
+
 <p align="center">
   <b>The most powerful codebase navigation, refactoring, and knowledge intelligence plugin for DeepSeek Harness agents.</b><br>
   Combines the best of AST symbol graphs and Markdown knowledge bases into an embedded <b>FalkorDB Cypher graph database</b> with a <code>tgrep</code>-style client-server daemon and incremental file watcher.
