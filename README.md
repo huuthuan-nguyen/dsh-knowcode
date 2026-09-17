@@ -506,35 +506,53 @@ dsh plugin add --profile web dsh-knowcode
 
 ### Zero-dependency by design
 
-`dsh-knowcode` declares **no runtime dependency on any `@deepseek-ai/*` package**. Its compiled output imports nothing but its own relative modules; harness types are pulled in with `import type` only, which TypeScript erases entirely.
+`dsh-knowcode` declares **no runtime dependency on any `@deepseek-ai/*` package**. Its compiled output imports nothing but its own relative modules; harness types are pulled in with `import type` only, which TypeScript erases entirely. Tool definitions are plain objects, `parameters` and `output.schema` are standard JSON Schema, and `Config` is a hand-written Standard Schema v1 validator.
 
-This is deliberate and load-bearing. DSH `0.1.6-alpha.2` changed the default `resolutionMode` to `runtime`, which loads the harness from its compiled artifacts. A plugin that *imports* a harness package at runtime can end up evaluating a **second copy** of it — and because `@deepseek-ai/dsh-tools` keys its tool scheduler on a module-private `Symbol()`:
+Third-party plugins should not load harness internals at runtime: the contract with the host is exactly the object passed to `tools.register()`, and a runtime import can add yet another evaluated copy of a package the host already owns.
 
-```ts
-export const TOOL_RUNTIME_SCHEDULER: unique symbol = Symbol('@deepseek-ai/dsh-tools.scheduler')
+### `Cannot read properties of undefined (reading 'prepare')`
+
+**This is a DeepSeek Harness defect, not a `dsh-knowcode` defect.** It was verified on a profile with **zero plugins installed**: every tool call (`bash`, `read`, `grep`, …) aborted the turn.
+
+Root cause, in the harness:
+
+- `packages/core/agent-loop/src/tool-calls.ts` reaches into the tool registry with `ctx.tools[TOOL_RUNTIME_SCHEDULER].prepare(call.exec)` and never checks the result.
+- `TOOL_RUNTIME_SCHEDULER` is declared with `Symbol(...)` (`packages/core/tools/src/index.ts`), not `Symbol.for(...)`, so the key is **private to one module instance**.
+- Harness `v0.1.6-alpha.2` changed the default `resolutionMode` from `link` to `runtime` (`apps/cli/src/profile-boot.ts`). When `@deepseek-ai/dsh-tools` is reachable through two resolution paths (the workspace copy and the profile install anchor's symlink), Node evaluates it twice, the two symbols differ, the lookup yields `undefined`, and the cryptic message aborts every tool call.
+
+Workarounds until the harness ships a fix:
+
+```bash
+# 1. One-line local harness patch, then rebuild the host libraries:
+#    packages/core/tools/src/index.ts
+#    - export const TOOL_RUNTIME_SCHEDULER: unique symbol = Symbol('@deepseek-ai/dsh-tools.scheduler')
+#    + export const TOOL_RUNTIME_SCHEDULER: unique symbol = Symbol.for('@deepseek-ai/dsh-tools.scheduler')
+pnpm run build:lib:host
+
+# 2. Or pin a harness release without the changed default:
+#    dsh-v0.1.6-alpha.1
+
+# 3. Or force the previous resolution mode, if your CLI exposes it:
+dsh --help | grep -i resolution
 ```
 
-...the second copy's `Symbol()` no longer matches the host's. `registry[TOOL_RUNTIME_SCHEDULER]` resolves to `undefined`, and **every tool call aborts** with:
+> ⚠️ That local harness patch is **not tracked by the harness repo** — `lib/` is gitignored there and the source edit stays uncommitted. Running `git checkout`, `git pull`, or `git stash` inside the harness checkout discards it, and the next `pnpm run build:lib:host` regenerates `lib/` with the broken private `Symbol()`. Keep the patch on a local branch.
 
-```
-Cannot read properties of undefined (reading 'prepare')
-```
-
-### Symptoms
+### Other known failure modes
 
 | Symptom | Cause |
 |---|---|
-| `Cannot read properties of undefined (reading 'prepare')` on every KnowCode tool call | The plugin (or another plugin) imported `@deepseek-ai/dsh-tools` at runtime |
-| Tools listed but instantly fail, while other plugins work | Same — this plugin's `Symbol()` mismatches the host's |
-| Provider rejects the tool schema / the model cannot see parameters | A tool declared `defineTool` author shorthand (`required: true`) instead of real JSON Schema |
+| Provider rejects a tool schema, or the model cannot see a tool's parameters | The tool declared `defineTool` author shorthand (`required: true` inside a property) instead of standard JSON Schema — rejected by the registry's `assertSupportedJsonSchema` |
+| A tool result renders an empty card in the Web GUI | A presenter returned a view field outside the declared union — e.g. `output` on `TerminalCallView`, which accepts only `card`, `title`, `description?`, `cwd?` |
 
-### How this plugin avoids it
+### How this plugin stays contract-correct
 
 1. **No runtime harness imports.** Tool definitions are plain objects; verified by a regression test that scans every compiled `.js` file for harness imports.
-2. **Standard JSON Schema only.** `parameters` and `output.schema` use `required: [...]` arrays of property names. `required: true` inside a property is `defineTool` author shorthand and is rejected by the registry's `assertSupportedJsonSchema`. The test suite additionally validates every schema with the harness's own validator.
+2. **Standard JSON Schema only.** `parameters` and `output.schema` use `required: [...]` arrays of property names. The test suite additionally validates every registered schema with the harness's own `assertSupportedJsonSchema`.
 3. **Standard Schema v1 config.** `Config['~standard'].validate()` is implemented by hand, so no `@deepseek-ai/schemastery` import is needed.
+4. **Hardened presenters.** `render`/`presentResult` tolerate a missing value, and `presentCall` emits only fields the declared view accepts.
 
-If you maintain another DSH plugin and hit this error, the fix is the same: drop the runtime import of `@deepseek-ai/dsh-tools`, build the `ToolDefinition` as a plain object, and declare real JSON Schema.
+If you maintain another DSH plugin and hit the `reading 'prepare'` error: it is **not** caused by your plugin, so a source change will not fix it. Apply one of the harness workarounds above. Making your plugin dependency-free is still worthwhile hygiene, but it is not the remedy.
 
 ---
 
@@ -570,8 +588,8 @@ Runs:
 - Cordis plugin registration and system prompt injection
 - `[trace]` logging: daemon startup, index phases, stale check, RPC/search lines
 - Tool-schema contract: every tool validated against the harness's own
-  `assertSupportedJsonSchema`, plus a regression guard asserting the compiled
-  output has **zero runtime `@deepseek-ai/*` imports**
+  `assertSupportedJsonSchema`, plus a guard asserting the compiled output has
+  **zero runtime `@deepseek-ai/*` imports**
 
 ---
 

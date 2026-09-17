@@ -150,7 +150,8 @@ test('the harness JSON Schema validator accepts every registered schema', async 
 });
 
 // ---------------------------------------------------------------------------
-// Regression guard for the DSH 0.1.6-alpha.2 "reading 'prepare'" crash
+// Contract guards: no runtime harness imports, and the DSH "reading 'prepare'"
+// crash is a harness defect that a plugin cannot fix by changing its own source.
 // ---------------------------------------------------------------------------
 
 test('compiled output contains zero runtime @deepseek-ai imports', () => {
@@ -164,11 +165,11 @@ test('compiled output contains zero runtime @deepseek-ai imports', () => {
   assert.deepStrictEqual(
     offenders,
     [],
-    'A runtime import of a harness package lets the plugin evaluate a second copy of it. ' +
-      'Its private scheduler Symbol() then mismatches the host\'s, so ' +
-      'registry[TOOL_RUNTIME_SCHEDULER] is undefined and every tool call fails with ' +
-      '"Cannot read properties of undefined (reading \'prepare\')". ' +
-      'Keep harness usage to `import type` only.'
+    'A plugin must not load harness internals at runtime: the contract with the host is ' +
+      'exactly the object passed to tools.register(), and a runtime import can add another ' +
+      'evaluated copy of a package the host already owns. Keep harness usage to `import type` ' +
+      'only. (Defense-in-depth — the harness\'s own "undefined (reading \'prepare\')" defect is ' +
+      'separate and reproduces with zero plugins installed.)'
   );
 });
 

@@ -3,15 +3,19 @@
  *
  * These are **type-only** re-exports of the harness contract, so `tsc` erases
  * them completely: the published compiled output contains no runtime import of
- * any `@deepseek-ai` package. That matters because importing the harness at runtime
- * lets the plugin evaluate a *second* copy of it, whose private scheduler
- * `Symbol()` mismatches the host's — leaving
- * `registry[TOOL_RUNTIME_SCHEDULER]` undefined and aborting every tool call with
- * `Cannot read properties of undefined (reading 'prepare')`.
+ * any `@deepseek-ai` package. A plugin should not load harness internals at
+ * runtime — the contract with the host is exactly the object passed to
+ * `tools.register()`, and a runtime import can add yet another evaluated copy of
+ * a package the host already owns.
  *
  * Reusing the harness's own types (rather than hand-rolled ones) keeps the tool
  * definitions provably assignable to `ToolDefinition` at compile time while
  * shipping zero runtime dependency.
+ *
+ * Note this is defense-in-depth, not the remedy for the harness's
+ * "Cannot read properties of undefined (reading 'prepare')" defect: that crash
+ * comes from the harness keying its scheduler on a private `Symbol()` instead of
+ * `Symbol.for()`, and it reproduces with zero plugins installed.
  */
 import type { JsonSchemaNode, ParameterJsonSchema } from '@deepseek-ai/dsh-tools';
 

@@ -5,9 +5,11 @@
  * (`ctx` reads `Config['~standard'].validate(raw)`), so the schema is declared
  * by hand instead of pulling in `@deepseek-ai/schemastery`.
  *
- * This keeps the plugin free of runtime harness imports: importing a harness
- * package here could evaluate a second copy of it, which mismatches the
- * harness's private scheduler `Symbol()` and breaks tool execution.
+ * This keeps the plugin free of runtime harness imports. A plugin should not
+ * load harness internals at runtime: it can add yet another evaluated copy of a
+ * package the host already owns. (Defense-in-depth only — the harness's
+ * "reading 'prepare'" defect comes from its own private `Symbol()` scheduler key
+ * and reproduces with zero plugins installed.)
  */
 export interface KnowCodeConfig {
     /** Optional custom FalkorDB URL (e.g. redis://127.0.0.1:6379). Defaults to embedded FalkorDB. */
