@@ -41,6 +41,111 @@ Traditional AI agent search tools rely on naive lexical search (`grep`) or flat 
 
 ---
 
+## 📦 Installation & Quickstart
+
+### Prerequisites
+
+| Requirement | Notes |
+|---|---|
+| **Node.js** `^22.19.0 \|\| >=24.0.0` | Same range the DeepSeek Harness requires. |
+| **pnpm** | Used by the development workflow (`pnpm run build`, `pnpm run test`). |
+| **Git LFS** | Needed to fetch the embedded FalkorDB binaries when cloning — see *Platform Support & Execution Guide* below. |
+
+### Where does the `knowcode` command come from?
+
+There is **no separate binary to download**. `knowcode` is the CLI entry point shipped inside this package and declared in its `package.json`:
+
+```json
+"bin": { "knowcode": "./bin/knowcode.js" }
+```
+
+Whenever the package is installed or linked, npm/pnpm expose that file as a `knowcode` symlink inside `node_modules/.bin/`. The file itself is a plain Node.js script (`#!/usr/bin/env node`), so it runs anywhere the runtime dependencies are installed.
+
+Pick whichever option below fits your situation.
+
+### Option 1 — Run from a clone (no install step)
+
+```bash
+git clone git@github.com:huuthuan-nguyen/dsh-knowcode.git
+cd dsh-knowcode
+pnpm install            # runtime deps: commander, falkordb, chokidar, fast-glob, ignore
+./bin/knowcode.js index .
+```
+
+`node bin/knowcode.js index .` behaves identically if you prefer to be explicit. The compiled `lib/` directory is committed, so no build is required.
+
+> **After editing anything under `src/`, rebuild before using the CLI** — `bin/knowcode.js` and the whole CLI import from `../lib/`:
+> ```bash
+> pnpm run build
+> ```
+
+### Option 2 — `npm link` for a global `knowcode` command
+
+Best for local development, so `knowcode` works from any directory:
+
+```bash
+cd dsh-knowcode
+pnpm install && pnpm run build
+npm link
+knowcode index .
+```
+
+`npm link` reads the `bin` field and symlinks `knowcode` into the global bin directory (shown by `npm prefix -g`). To undo it:
+
+```bash
+npm unlink -g dsh-knowcode
+```
+
+### Option 3 — Install into a DeepSeek Harness profile
+
+This links the package into `~/.dsh/profiles/<profile>/node_modules/` and registers it with the harness in one step:
+
+```bash
+dsh plugin add --profile web dsh-knowcode
+```
+
+The CLI becomes available inside that profile as well:
+
+```bash
+~/.dsh/profiles/web/node_modules/.bin/knowcode index .
+```
+
+Prefer configuring the profile by hand? Use the bundle patch shown under **DeepSeek Harness Plugin Setup** below, then restart the harness.
+
+### Option 4 — Install from npm (once published)
+
+> ⚠️ **Not published yet** — `npm view dsh-knowcode` currently returns `404`. These commands apply after the first `npm publish`.
+
+```bash
+# Global CLI
+npm install -g dsh-knowcode
+knowcode index .
+
+# …or as a project dependency
+pnpm add dsh-knowcode
+pnpm exec knowcode index .
+```
+
+### Verify the installation
+
+```bash
+knowcode --version     # prints the package version
+knowcode --help        # lists: index, serve, status, query, stop
+```
+
+Then build a graph for your repository and start the daemon:
+
+```bash
+knowcode index .                # one-shot index of code + docs
+knowcode serve .                # background daemon + live file watcher
+knowcode serve . --trace        # …with tgrep-style [trace] diagnostics
+knowcode status .               # health, file counts and daemon state
+```
+
+See the **CLI Usage** section below for the full command reference, and **Platform Support & Execution Guide** for per-operating-system notes (including Windows/WSL2 and Linux ARM64).
+
+---
+
 ## 🧰 The 25 Agent Tools
 
 Every tool is engineered for **LLM Function Calling and Semantic Intent Matching** on large codebases:
@@ -156,7 +261,11 @@ Every tool is engineered for **LLM Function Calling and Semantic Intent Matching
 
 ## 🛠 CLI Usage (Microsoft `tgrep`-style)
 
-`dsh-knowcode` ships with the `knowcode` executable CLI for terminal usage and CI/CD pipelines:
+`dsh-knowcode` ships with the `knowcode` executable CLI for terminal usage and CI/CD pipelines.
+
+> **Not sure you have the `knowcode` command yet?** It is not a separate download — see **Installation & Quickstart** above for the four ways to obtain it. Quick check: `knowcode --version`.
+>
+> Throughout this section, `knowcode …` can always be replaced by `./bin/knowcode.js …` when running from a clone.
 
 ### 1. One-shot Indexing (`knowcode index`)
 Index a codebase and its documentation into the embedded FalkorDB database:

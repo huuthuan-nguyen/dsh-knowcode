@@ -1,5 +1,6 @@
 node_modules/
 .knowcode/
+.tgrep/
 *.log
 *.rdb
 .DS_Store
