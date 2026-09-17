@@ -1,17 +1,34 @@
 import { watch, type FSWatcher } from 'chokidar';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { CodeParser } from '../parser/code-parser.js';
 import { DocParser } from '../parser/doc-parser.js';
 import type { KnowCodeRepository } from '../db/client.js';
 import { LinkEngine } from '../parser/link-engine.js';
+import { Tracer, type TraceSink, fmtMs, nsToMs } from './trace.js';
+
+/** Directory/filename fragments excluded from watching. */
+const WATCH_IGNORE_FRAGMENTS = [
+  '/node_modules',
+  '/.git',
+  '/.knowcode',
+  '/dist',
+  '/lib',
+  '/build',
+  '/.next',
+  '/bin',
+];
 
 export interface WatcherOptions {
   workdir: string;
   repo: KnowCodeRepository;
   onUpdate?: (event: string, path: string) => void;
   debounceMs?: number;
+  /** Enable `[trace] watch:` output. */
+  trace?: boolean;
+  /** Destination for trace lines. Defaults to stderr when `trace` is true. */
+  onTrace?: TraceSink;
 }
 
 export class CodeWatcher {
@@ -21,9 +38,14 @@ export class CodeWatcher {
   private pendingDeletions = new Set<string>();
   private debounceTimer: NodeJS.Timeout | null = null;
   private linkEngine: LinkEngine;
+  private tracer: Tracer;
 
   constructor(private options: WatcherOptions) {
     this.linkEngine = new LinkEngine(options.repo);
+    this.tracer = new Tracer({
+      enabled: options.trace ?? false,
+      sink: options.onTrace,
+    }).child('watch');
   }
 
   public start(): void {
@@ -31,17 +53,7 @@ export class CodeWatcher {
 
     const isIgnored = (path: string) => {
       const norm = path.replace(/\\/g, '/');
-      return (
-        norm.includes('/node_modules') ||
-        norm.includes('/.git') ||
-        norm.includes('/.knowcode') ||
-        norm.includes('/dist') ||
-        norm.includes('/lib') ||
-        norm.includes('/build') ||
-        norm.includes('/.next') ||
-        norm.includes('/bin') ||
-        norm.endsWith('.log')
-      );
+      return WATCH_IGNORE_FRAGMENTS.some((frag) => norm.includes(frag)) || norm.endsWith('.log');
     };
 
     this.watcher = watch(this.options.workdir, {
@@ -57,6 +69,14 @@ export class CodeWatcher {
     this.watcher.on('add', (filePath: string) => this.queueChange(filePath));
     this.watcher.on('change', (filePath: string) => this.queueChange(filePath));
     this.watcher.on('unlink', (filePath: string) => this.queueDelete(filePath));
+
+    this.tracer.line(
+      `ignore matcher ready (${WATCH_IGNORE_FRAGMENTS.map((f) => f.slice(1)).join(', ')})`
+    );
+    this.tracer.line(
+      `worker started (workspace=${this.options.workdir}, engine=chokidar, ` +
+        `awaitWriteFinish=200ms, debounce=${this.options.debounceMs ?? 300}ms)`
+    );
   }
 
   public async stop(): Promise<void> {
@@ -67,6 +87,7 @@ export class CodeWatcher {
     if (this.watcher) {
       await this.watcher.close();
       this.watcher = null;
+      this.tracer.line('worker stopped');
     }
   }
 
@@ -97,16 +118,25 @@ export class CodeWatcher {
     this.pendingChanges.clear();
     this.pendingDeletions.clear();
 
+    const batchNs = process.hrtime.bigint();
+    const tracing = this.tracer.enabled;
+    if (tracing) {
+      this.tracer.line(`batch ${changes.length} change(s), ${deletions.length} deletion(s)`);
+    }
+
     // 1. Process deletions
     for (const relPath of deletions) {
       this.hashes.delete(relPath);
       await this.options.repo.deleteFile(relPath);
       await this.options.repo.deleteDoc(relPath);
       this.options.onUpdate?.('delete', relPath);
+      if (tracing) this.tracer.line(`unlink ${relPath}`);
     }
 
     // 2. Process changes & additions
     let hasCodeUpdates = false;
+    let reindexed = 0;
+    let skipped = 0;
     for (const relPath of changes) {
       const absPath = `${this.options.workdir}/${relPath}`;
       if (!existsSync(absPath)) continue;
@@ -120,19 +150,27 @@ export class CodeWatcher {
 
       const hash = createHash('sha256').update(content).digest('hex');
       if (this.hashes.get(relPath) === hash) {
+        skipped++;
         continue; // Unchanged content
       }
       this.hashes.set(relPath, hash);
 
+      const fileNs = process.hrtime.bigint();
+
       // Check if code file
       const codeParsed = CodeParser.parseFile(relPath, content);
       if (codeParsed) {
+        codeParsed.mtimeMs = readMtimeMs(absPath);
         await this.options.repo.ingestCodeFile(codeParsed);
         await this.options.repo.ingestImports(codeParsed.imports);
         await this.options.repo.ingestCalls(codeParsed.calls);
         await this.options.repo.ingestHeritage(codeParsed.heritage);
         hasCodeUpdates = true;
+        reindexed++;
         this.options.onUpdate?.('update_code', relPath);
+        if (tracing) {
+          this.tracer.line(`update ${relPath} in ${fmtMs(process.hrtime.bigint() - fileNs)} (symbols=${codeParsed.symbols.length})`);
+        }
         continue;
       }
 
@@ -140,14 +178,37 @@ export class CodeWatcher {
       const docParsed = DocParser.parseDoc(relPath, content);
       if (docParsed) {
         await this.options.repo.ingestDocFile(docParsed);
+        reindexed++;
         this.options.onUpdate?.('update_doc', relPath);
+        if (tracing) {
+          this.tracer.line(`update ${relPath} in ${fmtMs(process.hrtime.bigint() - fileNs)} (doc)`);
+        }
         continue;
       }
     }
 
     // Re-link relationships if code files changed
+    let relinkMs = 0;
     if (hasCodeUpdates) {
+      const relNs = process.hrtime.bigint();
       await this.linkEngine.linkAll();
+      relinkMs = nsToMs(process.hrtime.bigint() - relNs);
     }
+
+    if (tracing && (reindexed > 0 || deletions.length > 0)) {
+      this.tracer.line(
+        `incremental reindex complete: ${reindexed} file(s) in ${fmtMs(process.hrtime.bigint() - batchNs)} ` +
+          `(relink=${fmtMs(relinkMs)}, skipped=${skipped}, removed=${deletions.length})`
+      );
+    }
+  }
+}
+
+/** Read a file's mtime in epoch milliseconds, or 0 when unavailable. */
+function readMtimeMs(absPath: string): number {
+  try {
+    return statSync(absPath).mtimeMs;
+  } catch {
+    return 0;
   }
 }

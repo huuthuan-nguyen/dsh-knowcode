@@ -1,5 +1,6 @@
 import http from 'node:http';
-import { existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import fg from 'fast-glob';
 import { FalkorDBManager, FalkorInstance } from '../db/falkor-manager.js';
@@ -9,7 +10,33 @@ import { CodeParser } from '../parser/code-parser.js';
 import { DocParser } from '../parser/doc-parser.js';
 import { LinkEngine } from '../parser/link-engine.js';
 import { CodeWatcher } from './watcher.js';
+import { Tracer, type TraceSink, fmtMs, nsToMs } from './trace.js';
 import type { KnowCodeStats } from '../types.js';
+
+/** File globs considered indexable. Shared by indexing and the stale check. */
+const STORAGE_FILE_PATTERN =
+  '**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,c,cpp,h,hpp,md,mdx,markdown,txt}';
+
+/** Directory globs never indexed or watched. */
+const INDEX_IGNORE_GLOBS = [
+  '**/node_modules/**',
+  '**/.git/**',
+  '**/.knowcode/**',
+  '**/dist/**',
+  '**/lib/**',
+  '**/build/**',
+  '**/.next/**',
+  '**/coverage/**',
+];
+
+/** Read a file's mtime in epoch milliseconds, or 0 when unavailable. */
+function readMtimeMs(absPath: string): number {
+  try {
+    return statSync(absPath).mtimeMs;
+  } catch {
+    return 0;
+  }
+}
 
 export interface DaemonOptions {
   workdir: string;
@@ -17,6 +44,10 @@ export interface DaemonOptions {
   dataDir?: string;
   falkordbUrl?: string;
   onLog?: (msg: string) => void;
+  /** Enable Microsoft `tgrep`-style `[trace]` output. */
+  trace?: boolean;
+  /** Destination for trace lines. Defaults to stderr when `trace` is true. */
+  onTrace?: TraceSink;
 }
 
 export class KnowCodeDaemon {
@@ -27,12 +58,23 @@ export class KnowCodeDaemon {
   private watcher: CodeWatcher | null = null;
   private isIndexing: boolean = false;
   private lastIndexedAt: string | null = null;
+  private tracer: Tracer;
 
   constructor(private options: DaemonOptions) {
     this.falkorManager = new FalkorDBManager();
+    this.tracer = new Tracer({
+      enabled: options.trace ?? false,
+      sink: options.onTrace,
+    });
+  }
+
+  /** Expose the tracer so CLI callers can emit their own spans. */
+  public getTracer(): Tracer {
+    return this.tracer;
   }
 
   public async start(startOpts?: { withWatcher?: boolean }): Promise<{ port: number; pid: number }> {
+    const startupNs = process.hrtime.bigint();
     const workdir = resolve(this.options.workdir);
     const dataDir = join(workdir, this.options.dataDir ?? '.knowcode');
     if (!existsSync(dataDir)) {
@@ -40,25 +82,24 @@ export class KnowCodeDaemon {
     }
 
     this.log(`Starting FalkorDB embedded database in ${dataDir}...`);
+    const openSpan = this.tracer.span(`db: embedded FalkorDB opened (dir=${dataDir})`);
     this.falkorInstance = await this.falkorManager.start({
       dataDir,
       customUrl: this.options.falkordbUrl,
       preferredPort: (this.options.port ?? 48123) + 10,
     });
+    openSpan.end();
 
     const graph = this.falkorInstance.client.selectGraph('knowcode');
-    await initGraphSchema(graph);
+    await this.tracer.step('schema: indexes ensured', () => initGraphSchema(graph));
     this.repo = new KnowCodeRepository(graph);
 
-    // Start background watcher if requested (default true)
-    if (startOpts?.withWatcher !== false) {
-      this.watcher = new CodeWatcher({
-        workdir,
-        repo: this.repo,
-        onUpdate: (evt, path) => this.log(`[Watcher] ${evt}: ${path}`),
-      });
-      this.watcher.start();
-      this.log('File watcher active on workspace.');
+    // Report the graph contents now loaded into the embedded engine.
+    if (this.tracer.enabled) {
+      const opened = await this.repo.getStats();
+      this.tracer.line(
+        `opened index: ${opened.totalFiles} files, ${opened.totalSymbols} symbols, ${opened.totalCalls} calls, ${opened.totalDocs} docs`
+      );
     }
 
     // Start HTTP daemon server
@@ -94,6 +135,33 @@ export class KnowCodeDaemon {
     );
 
     this.log(`KnowCode daemon server listening on http://127.0.0.1:${daemonPort}`);
+
+    if (this.tracer.enabled) {
+      const stats = await this.repo.getStats();
+      this.tracer.line(
+        `serve ready in ${fmtMs(process.hrtime.bigint() - startupNs)}. ` +
+          `HTTP on port ${daemonPort}. ` +
+          `Graph: ${stats.totalSymbols} symbols / ${stats.totalCalls} calls / ${stats.totalDocs} docs / ${stats.totalSections} sections. ` +
+          `Data dir: ${dataDir}.`
+      );
+    }
+
+    // Start the background watcher after the server is accepting connections,
+    // so `serve ready` lands before the watcher/refresh traces (tgrep ordering).
+    if (startOpts?.withWatcher !== false) {
+      const debounceMs = 300;
+      this.tracer.line(`refresh mode: auto, debounce=${debounceMs}ms, awaitWriteFinish=200ms`);
+      this.watcher = new CodeWatcher({
+        workdir,
+        repo: this.repo,
+        debounceMs,
+        onTrace: this.options.onTrace,
+        trace: this.tracer.enabled,
+        onUpdate: (evt, path) => this.log(`[Watcher] ${evt}: ${path}`),
+      });
+      this.watcher.start();
+      this.log('File watcher active on workspace.');
+    }
 
     // Clean exit handlers
     const shutdown = () => this.stop().catch(() => {});
@@ -146,40 +214,29 @@ export class KnowCodeDaemon {
     }
     this.isIndexing = true;
     const startTime = Date.now();
+    const indexNs = process.hrtime.bigint();
 
     try {
       const rootDir = resolve(targetPath ?? this.options.workdir);
       this.log(`Beginning indexing scan of ${rootDir}...`);
 
-      const filePatterns = [
-        '**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,c,cpp,h,hpp,md,mdx,markdown,txt}',
-      ];
-
-      const entries = await fg(filePatterns, {
-        cwd: rootDir,
-        ignore: [
-          '**/node_modules/**',
-          '**/.git/**',
-          '**/.knowcode/**',
-          '**/dist/**',
-          '**/lib/**',
-          '**/build/**',
-          '**/.next/**',
-          '**/coverage/**',
-        ],
-        dot: false,
-      });
+      const scanNs = process.hrtime.bigint();
+      const entries = await this.discoverFiles(rootDir);
+      const scanMs = nsToMs(process.hrtime.bigint() - scanNs);
 
       this.log(`Found ${entries.length} candidate files.`);
 
       let codeCount = 0;
       let docCount = 0;
       let totalSymbols = 0;
+      let totalCalls = 0;
+      let parseNs = 0n;
 
       const allImports: any[] = [];
       const allCalls: any[] = [];
       const allHeritage: any[] = [];
 
+      const parseStartNs = process.hrtime.bigint();
       for (const relPath of entries) {
         const absPath = join(rootDir, relPath);
         let content = '';
@@ -192,9 +249,11 @@ export class KnowCodeDaemon {
         // Check if code file
         const parsedCode = CodeParser.parseFile(relPath, content);
         if (parsedCode) {
+          parsedCode.mtimeMs = readMtimeMs(absPath);
           await this.repo!.ingestCodeFile(parsedCode);
           codeCount++;
           totalSymbols += parsedCode.symbols.length;
+          totalCalls += parsedCode.calls.length;
           allImports.push(...parsedCode.imports);
           allCalls.push(...parsedCode.calls);
           allHeritage.push(...parsedCode.heritage);
@@ -209,9 +268,11 @@ export class KnowCodeDaemon {
           continue;
         }
       }
+      parseNs = process.hrtime.bigint() - parseStartNs;
 
       // Ingest cross-file relationships
       this.log(`Ingesting relationships: ${allImports.length} imports, ${allCalls.length} calls...`);
+      const relNs = process.hrtime.bigint();
       await this.repo!.ingestImports(allImports);
       await this.repo!.ingestCalls(allCalls);
       await this.repo!.ingestHeritage(allHeritage);
@@ -219,10 +280,16 @@ export class KnowCodeDaemon {
       // Run link engine passes
       const linker = new LinkEngine(this.repo!);
       await linker.linkAll();
+      const relMs = nsToMs(process.hrtime.bigint() - relNs);
 
       this.lastIndexedAt = new Date().toISOString();
       const elapsed = Date.now() - startTime;
       this.log(`Indexing complete in ${elapsed}ms: ${codeCount} code files, ${docCount} docs, ${totalSymbols} symbols.`);
+
+      this.tracer.line(
+        `index: scan=${fmtMs(scanMs)} parse+ingest=${fmtMs(parseNs)} relink=${fmtMs(relMs)} ` +
+          `(code=${codeCount} docs=${docCount} symbols=${totalSymbols} calls=${totalCalls} total=${fmtMs(process.hrtime.bigint() - indexNs)})`
+      );
 
       return {
         filesIndexed: codeCount + docCount,
@@ -233,6 +300,176 @@ export class KnowCodeDaemon {
     } finally {
       this.isIndexing = false;
     }
+  }
+
+  /**
+   * Discover indexable files. Shared by full indexing and the stale check so the
+   * two always agree on exactly which files are in scope.
+   */
+  private async discoverFiles(rootDir: string): Promise<string[]> {
+    return await fg([STORAGE_FILE_PATTERN], {
+      cwd: rootDir,
+      ignore: [...INDEX_IGNORE_GLOBS],
+      dot: false,
+    });
+  }
+
+  /**
+   * Compare the graph against the filesystem without re-parsing everything.
+   *
+   * Uses `mtimeMs` as a cheap first pass and only falls back to hashing a file
+   * whose mtime moved, so a no-op run never reads file contents.
+   */
+  public async staleCheck(targetPath?: string): Promise<{
+    added: string[];
+    changed: string[];
+    deleted: string[];
+    checked: number;
+    timeMs: number;
+  }> {
+    if (!this.repo) throw new Error('Repository not initialized');
+
+    const startNs = process.hrtime.bigint();
+    const rootDir = resolve(targetPath ?? this.options.workdir);
+
+    this.tracer.line('stale check: comparing index against filesystem...');
+
+    const walkNs = process.hrtime.bigint();
+    const onDisk = await this.discoverFiles(rootDir);
+    const ignoreNs = process.hrtime.bigint() - walkNs;
+    this.tracer.line(
+      `ignore matcher built from stale walk in ${fmtMs(ignoreNs)} (${onDisk.length} candidate files)`
+    );
+
+    const indexedRes = await this.repo.query(
+      `MATCH (f:File) RETURN f.path AS path, f.hash AS hash, f.mtimeMs AS mtimeMs`
+    );
+    const indexed = new Map<string, { hash: string; mtimeMs: number }>();
+    for (const row of (indexedRes.data ?? []) as any[]) {
+      indexed.set(row.path, { hash: row.hash ?? '', mtimeMs: Number(row.mtimeMs ?? 0) });
+    }
+
+    const diskSet = new Set(onDisk);
+    const added: string[] = [];
+    const changed: string[] = [];
+
+    for (const relPath of onDisk) {
+      const record = indexed.get(relPath);
+      if (!record) {
+        added.push(relPath);
+        continue;
+      }
+
+      const absPath = join(rootDir, relPath);
+      const diskMtime = readMtimeMs(absPath);
+
+      // Fast path: unchanged mtime means unchanged content.
+      if (record.mtimeMs && diskMtime && record.mtimeMs === diskMtime) {
+        continue;
+      }
+
+      // mtime moved (or was never recorded) — confirm by hashing before reindexing.
+      let content = '';
+      try {
+        content = readFileSync(absPath, 'utf8');
+      } catch {
+        continue;
+      }
+      const hash = createHash('sha256').update(content).digest('hex');
+      if (hash !== record.hash) {
+        changed.push(relPath);
+      }
+    }
+
+    const deleted: string[] = [];
+    for (const path of indexed.keys()) {
+      if (!diskSet.has(path)) deleted.push(path);
+    }
+
+    const timeMs = nsToMs(process.hrtime.bigint() - startNs);
+
+    if (added.length === 0 && changed.length === 0 && deleted.length === 0) {
+      this.tracer.line(`stale check: index is up-to-date (${onDisk.length} files checked in ${fmtMs(timeMs)})`);
+    } else {
+      this.tracer.line(
+        `stale check: ${added.length} added / ${changed.length} changed / ${deleted.length} deleted ` +
+          `(${onDisk.length} files checked in ${fmtMs(timeMs)})`
+      );
+      for (const p of [...added, ...changed, ...deleted].slice(0, 50)) {
+        this.tracer.line(`stale: ${p}`);
+      }
+    }
+
+    return { added, changed, deleted, checked: onDisk.length, timeMs };
+  }
+
+  /**
+   * Incrementally reconcile the graph with a known set of changed paths.
+   * Used by `serve` startup so an unchanged workspace costs no re-parsing.
+   */
+  public async reindexPaths(
+    changed: string[],
+    deleted: string[] = [],
+    targetPath?: string
+  ): Promise<{ updated: number; removed: number }> {
+    if (!this.repo) throw new Error('Repository not initialized');
+    if (changed.length === 0 && deleted.length === 0) return { updated: 0, removed: 0 };
+
+    const rootDir = resolve(targetPath ?? this.options.workdir);
+    const startNs = process.hrtime.bigint();
+
+    for (const relPath of deleted) {
+      await this.repo.deleteFile(relPath);
+      await this.repo.deleteDoc(relPath);
+    }
+
+    let updated = 0;
+    const allImports: any[] = [];
+    const allCalls: any[] = [];
+    const allHeritage: any[] = [];
+    let sawCode = false;
+
+    for (const relPath of changed) {
+      const absPath = join(rootDir, relPath);
+      let content = '';
+      try {
+        content = readFileSync(absPath, 'utf8');
+      } catch {
+        continue;
+      }
+
+      const parsedCode = CodeParser.parseFile(relPath, content);
+      if (parsedCode) {
+        parsedCode.mtimeMs = readMtimeMs(absPath);
+        await this.repo.ingestCodeFile(parsedCode);
+        allImports.push(...parsedCode.imports);
+        allCalls.push(...parsedCode.calls);
+        allHeritage.push(...parsedCode.heritage);
+        sawCode = true;
+        updated++;
+        continue;
+      }
+
+      const parsedDoc = DocParser.parseDoc(relPath, content);
+      if (parsedDoc) {
+        await this.repo.ingestDocFile(parsedDoc);
+        updated++;
+      }
+    }
+
+    if (sawCode) {
+      await this.repo.ingestImports(allImports);
+      await this.repo.ingestCalls(allCalls);
+      await this.repo.ingestHeritage(allHeritage);
+      await new LinkEngine(this.repo).linkAll();
+    }
+
+    this.lastIndexedAt = new Date().toISOString();
+    this.tracer.line(
+      `reindex: ${updated} file(s) refreshed, ${deleted.length} removed in ${fmtMs(process.hrtime.bigint() - startNs)}`
+    );
+
+    return { updated, removed: deleted.length };
   }
 
   private async handleRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
@@ -330,7 +567,58 @@ export class KnowCodeDaemon {
     sendJson({ error: 'Endpoint not found' }, 404);
   }
 
+  /**
+   * Dispatch an RPC action, emitting `rpc:` / `search:` trace lines when
+   * tracing is enabled. Tracing adds a single boolean check when off.
+   */
   private async dispatchRpc(action: string, params: any): Promise<any> {
+    if (!this.tracer.enabled) {
+      return await this.dispatchRpcInner(action, params);
+    }
+
+    const startNs = process.hrtime.bigint();
+    const metrics: { rawCandidates?: number; candidates?: number } = {};
+
+    try {
+      const result = await this.dispatchRpcInner(action, params, metrics);
+      const elapsedNs = process.hrtime.bigint() - startNs;
+      const resultSize = Array.isArray(result)
+        ? result.length
+        : result && typeof result === 'object'
+        ? Object.keys(result).length
+        : 0;
+
+      this.tracer.line(`rpc: action=${action} elapsed=${fmtMs(elapsedNs)} result=${resultSize}`);
+
+      if (action === 'search_symbols') {
+        const pattern = params.pattern ?? params.query ?? '';
+        const matches = Array.isArray(result) ? result.length : 0;
+        this.tracer.line(
+          `search: pattern="${pattern}" case_insensitive=true ` +
+            `raw_candidates=${metrics.rawCandidates ?? matches} candidates=${metrics.candidates ?? matches} ` +
+            `matches=${matches} elapsed=${fmtMs(elapsedNs)}`
+        );
+      } else if (action === 'knowledge_search') {
+        const matches = Array.isArray(result) ? result.length : 0;
+        this.tracer.line(
+          `knowledge search: query="${params.query ?? ''}" matches=${matches} elapsed=${fmtMs(elapsedNs)}`
+        );
+      }
+
+      return result;
+    } catch (err: any) {
+      this.tracer.line(
+        `rpc: action=${action} FAILED in ${fmtMs(process.hrtime.bigint() - startNs)}: ${err?.message ?? String(err)}`
+      );
+      throw err;
+    }
+  }
+
+  private async dispatchRpcInner(
+    action: string,
+    params: any,
+    metrics?: { rawCandidates?: number; candidates?: number }
+  ): Promise<any> {
     if (!this.repo) throw new Error('Repository not initialized');
 
     switch (action) {
@@ -343,7 +631,12 @@ export class KnowCodeDaemon {
       case 'subtypes':
         return await this.repo.findSubtypesAndImplementations(params.symbol);
       case 'search_symbols':
-        return await this.repo.searchSymbols(params.pattern ?? params.query, params.kind, params.limit ?? 25);
+        return await this.repo.searchSymbols(
+          params.pattern ?? params.query,
+          params.kind,
+          params.limit ?? 25,
+          metrics
+        );
       case 'unused_symbols':
         return await this.repo.findUnusedSymbols(params.limit ?? 50);
       case 'git_diff_impact':

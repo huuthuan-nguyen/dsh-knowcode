@@ -6,20 +6,26 @@ import { runServeCommand } from '../lib/cli/serve-cmd.js';
 import { runStatusCommand } from '../lib/cli/status-cmd.js';
 import { runQueryCommand } from '../lib/cli/query-cmd.js';
 import { KnowCodeRpcClient } from '../lib/server/client-rpc.js';
-import { resolve } from 'node:path';
+import { resolve, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { readFileSync } from 'node:fs';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const pkg = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf8'));
 
 const program = new Command();
 
 program
   .name('knowcode')
   .description('Embedded FalkorDB Code Graph & Knowledge Base for DeepSeek Harness')
-  .version('1.0.0');
+  .version(pkg.version);
 
 program
   .command('index [dir]')
   .description('Index codebase and documentation into FalkorDB graph')
   .option('-p, --port <number>', 'Daemon port', (v) => parseInt(v, 10))
   .option('-d, --data-dir <path>', 'Data directory', '.knowcode')
+  .option('-t, --trace', 'Emit tgrep-style [trace] logs to stderr')
   .action(async (dir = '.', options) => {
     try {
       await runIndexCommand(dir, options);
@@ -34,6 +40,8 @@ program
   .description('Start background daemon with live file watcher and incremental re-indexing')
   .option('-p, --port <number>', 'Daemon port', (v) => parseInt(v, 10), 48123)
   .option('-d, --data-dir <path>', 'Data directory', '.knowcode')
+  .option('-t, --trace', 'Emit tgrep-style [trace] logs to stderr')
+  .option('-f, --force-index', 'Skip the stale check and always run a full re-index')
   .action(async (dir = '.', options) => {
     try {
       await runServeCommand(dir, options);

@@ -52,6 +52,8 @@ export interface ParsedCodeFile {
   lineCount: number;
   size: number;
   isTest: boolean;
+  /** Last modification time in epoch milliseconds, used for fast stale checks. */
+  mtimeMs?: number;
   symbols: CodeSymbol[];
   calls: CodeCall[];
   imports: FileImport[];

@@ -127,7 +127,8 @@ export class KnowCodeRepository {
         hash: $hash,
         lineCount: $lineCount,
         size: $size,
-        isTest: $isTest
+        isTest: $isTest,
+        mtimeMs: $mtimeMs
       })`,
       {
         params: {
@@ -137,6 +138,7 @@ export class KnowCodeRepository {
           lineCount: parsed.lineCount,
           size: parsed.size ?? 0,
           isTest: parsed.isTest ?? false,
+          mtimeMs: parsed.mtimeMs ?? 0,
         },
       }
     );
@@ -456,18 +458,41 @@ export class KnowCodeRepository {
   /**
    * Fuzzy/case-insensitive search for symbols by name pattern or substring
    */
-  public async searchSymbols(pattern: string, kind?: string, limit: number = 25): Promise<CodeSymbol[]> {
+  /**
+   * Search symbols by name/qname substring.
+   *
+   * When `metrics` is supplied (only done while tracing is enabled) one extra
+   * pre-LIMIT count query runs so the caller can report `raw_candidates`.
+   */
+  public async searchSymbols(
+    pattern: string,
+    kind?: string,
+    limit: number = 25,
+    metrics?: { rawCandidates?: number; candidates?: number }
+  ): Promise<CodeSymbol[]> {
     const params: Record<string, any> = { pattern, limit };
-    let cypher = `MATCH (s:Symbol) WHERE toLower(s.name) CONTAINS toLower($pattern) OR toLower(s.qname) CONTAINS toLower($pattern)`;
+    const whereClause = `WHERE toLower(s.name) CONTAINS toLower($pattern) OR toLower(s.qname) CONTAINS toLower($pattern)`;
     if (kind) {
-      cypher += ` AND s.kind = $kind`;
       params.kind = kind;
     }
-    cypher += ` RETURN s.id AS id, s.name AS name, s.qname AS qname, s.kind AS kind, s.file AS file,
-                      s.startLine AS startLine, s.endLine AS endLine, s.signature AS signature,
-                      s.docstring AS docstring, s.visibility AS visibility, s.isExported AS isExported
-               ORDER BY size(s.name) ASC
-               LIMIT $limit`;
+    const kindClause = kind ? ` AND s.kind = $kind` : '';
+
+    if (metrics) {
+      const countRes = await this.graph.query(
+        `MATCH (s:Symbol) ${whereClause}${kindClause} RETURN count(s) AS total`,
+        { params: kind ? { pattern, kind } : { pattern } }
+      );
+      const total = (countRes.data?.[0] as any)?.total ?? 0;
+      metrics.rawCandidates = total;
+      metrics.candidates = Math.min(total, limit);
+    }
+
+    const cypher = `MATCH (s:Symbol) ${whereClause}${kindClause}
+       RETURN s.id AS id, s.name AS name, s.qname AS qname, s.kind AS kind, s.file AS file,
+              s.startLine AS startLine, s.endLine AS endLine, s.signature AS signature,
+              s.docstring AS docstring, s.visibility AS visibility, s.isExported AS isExported
+       ORDER BY size(s.name) ASC
+       LIMIT $limit`;
 
     const res = await this.graph.query(cypher, { params });
     return (res.data ?? []).map((r: any) => ({

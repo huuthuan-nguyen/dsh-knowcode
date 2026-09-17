@@ -1,9 +1,15 @@
 import { resolve } from 'node:path';
 import { KnowCodeRpcClient } from '../server/client-rpc.js';
 import { KnowCodeDaemon } from '../server/daemon.js';
+import { createTraceSink, isTraceEnabled } from './trace-flag.js';
 
-export async function runIndexCommand(targetDir: string = '.', options: { port?: number; dataDir?: string } = {}): Promise<void> {
+export async function runIndexCommand(
+  targetDir: string = '.',
+  options: { port?: number; dataDir?: string; trace?: boolean } = {}
+): Promise<void> {
   const workdir = resolve(targetDir);
+  const tracing = isTraceEnabled(options.trace);
+  const onTrace = createTraceSink(tracing);
   const client = new KnowCodeRpcClient({ workdir, port: options.port, dataDir: options.dataDir });
 
   const isAlive = await client.isDaemonAlive();
@@ -20,7 +26,9 @@ export async function runIndexCommand(targetDir: string = '.', options: { port?:
     workdir,
     port: options.port,
     dataDir: options.dataDir,
-    onLog: (msg) => console.log(msg),
+    trace: tracing,
+    onTrace,
+    onLog: (msg) => console.log(`[KnowCode] ${msg}`),
   });
 
   try {

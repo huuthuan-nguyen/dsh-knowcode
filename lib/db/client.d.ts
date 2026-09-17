@@ -63,7 +63,16 @@ export declare class KnowCodeRepository {
     /**
      * Fuzzy/case-insensitive search for symbols by name pattern or substring
      */
-    searchSymbols(pattern: string, kind?: string, limit?: number): Promise<CodeSymbol[]>;
+    /**
+     * Search symbols by name/qname substring.
+     *
+     * When `metrics` is supplied (only done while tracing is enabled) one extra
+     * pre-LIMIT count query runs so the caller can report `raw_candidates`.
+     */
+    searchSymbols(pattern: string, kind?: string, limit?: number, metrics?: {
+        rawCandidates?: number;
+        candidates?: number;
+    }): Promise<CodeSymbol[]>;
     /**
      * Get callers of a symbol
      */
