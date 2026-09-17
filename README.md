@@ -600,4 +600,4 @@ Runs:
 
 ## License
 
-MIT © 2026-present Thuan Nguyen
+MIT © Thuan Nguyen
