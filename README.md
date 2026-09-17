@@ -209,6 +209,63 @@ knowcode query "MATCH (s:Symbol {kind: 'class'}) RETURN s.name, s.file"
 knowcode stop .
 ```
 
+### 6. Trace Logging (`--trace`)
+
+`serve` and `index` accept a `-t, --trace` flag that emits **Microsoft `tgrep`-style** `[trace]` diagnostics: one line per phase and per request, with timings, candidate/match counts, and watcher activity.
+
+```bash
+knowcode serve . --trace          # trace this run
+knowcode index . --trace          # trace a one-shot index
+KNOWCODE_TRACE=1 knowcode serve . # ...or enable via environment variable
+```
+
+Trace lines are written to **stderr**, so stdout stays a clean status stream:
+
+```bash
+knowcode serve . --trace 2> trace.log   # keep traces in a separate file
+```
+
+Example output:
+
+```
+[trace] db: embedded FalkorDB opened (dir=/repo/.knowcode) in 42.6ms
+[trace] schema: indexes ensured in 4.2ms
+[trace] opened index: 148 files, 1240 symbols, 3892 calls, 18 docs
+[trace] serve ready in 52.7ms. HTTP on port 48123. Graph: 1240 symbols / 3892 calls / 18 docs / 64 sections. Data dir: /repo/.knowcode.
+[trace] refresh mode: auto, debounce=300ms, awaitWriteFinish=200ms
+[trace] watch: ignore matcher ready (node_modules, .git, .knowcode, dist, lib, build, .next, bin)
+[trace] watch: worker started (workspace=/repo, engine=chokidar, awaitWriteFinish=200ms, debounce=300ms)
+[trace] stale check: comparing index against filesystem...
+[trace] ignore matcher built from stale walk in 6.2ms (148 candidate files)
+[trace] stale check: index is up-to-date (148 files checked in 8.8ms)
+[trace] rpc: action=search_symbols elapsed=1.4ms result=1
+[trace] search: pattern="VpbankEvent" case_insensitive=true raw_candidates=5 candidates=5 matches=19 elapsed=1.4ms
+[trace] watch: batch 1 change(s), 0 deletion(s)
+[trace] watch: update src/report.ts in 12.5ms (symbols=2)
+[trace] watch: incremental reindex complete: 1 file(s) in 14.6ms (relink=1.6ms, skipped=0, removed=0)
+```
+
+**What the traces tell you**
+
+| Line | Meaning |
+|---|---|
+| `opened index:` | Graph contents loaded from the embedded FalkorDB database at startup. |
+| `serve ready in …` | Total startup latency, HTTP port, and final graph size. |
+| `refresh mode:` / `watch:` | Watcher configuration, ignore rules, and engine. |
+| `stale check:` | Startup reconciliation against the filesystem — when the index is already current, `serve` **skips re-parsing entirely**. |
+| `rpc:` | One line per tool call reaching the daemon, with action, latency, and result size. |
+| `search:` | Detailed `search_symbols` metrics: pattern, pre-limit `raw_candidates`, `candidates`, `matches`, and elapsed time. |
+| `watch: batch` / `update` / `incremental reindex complete` | Live edits picked up by the debounced watcher, with per-file and relink timings. |
+
+Tracing is **opt-in and zero-cost when disabled** — the hot path short-circuits on a single boolean before any string is built.
+
+To bypass the stale check and always force a full re-index:
+```bash
+knowcode serve . --force-index
+```
+
+> If `--trace` is off, `knowcode serve .` output is unchanged from a plain run.
+
 ---
 
 ## 💻 Platform Support & Execution Guide
