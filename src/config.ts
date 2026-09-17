@@ -1,5 +1,14 @@
-import z from '@deepseek-ai/schemastery';
-
+/**
+ * KnowCode plugin configuration.
+ *
+ * Cordis validates a plugin's `Config` through Standard Schema v1
+ * (`ctx` reads `Config['~standard'].validate(raw)`), so the schema is declared
+ * by hand instead of pulling in `@deepseek-ai/schemastery`.
+ *
+ * This keeps the plugin free of runtime harness imports: importing a harness
+ * package here could evaluate a second copy of it, which mismatches the
+ * harness's private scheduler `Symbol()` and breaks tool execution.
+ */
 export interface KnowCodeConfig {
   /** Optional custom FalkorDB URL (e.g. redis://127.0.0.1:6379). Defaults to embedded FalkorDB. */
   falkordbUrl?: string;
@@ -15,15 +24,6 @@ export interface KnowCodeConfig {
   autoStartDaemon?: boolean;
 }
 
-export const KnowCodeConfig: z<KnowCodeConfig> = z.object({
-  falkordbUrl: z.string().description('External FalkorDB connection URL, or empty for embedded FalkorDB').default(''),
-  daemonPort: z.number().description('Port for the background daemon HTTP/IPC server').default(48123),
-  dataDir: z.string().description('Directory for persistent database files').default('.knowcode'),
-  maxFileSize: z.number().description('Maximum file size to index in bytes').default(1024 * 1024),
-  blastRadiusMaxDepth: z.number().description('Default depth for blast radius analysis').default(3),
-  autoStartDaemon: z.boolean().description('Auto-start daemon if not running').default(true),
-});
-
 export interface ResolvedKnowCodeConfig {
   falkordbUrl: string;
   daemonPort: number;
@@ -33,13 +33,53 @@ export interface ResolvedKnowCodeConfig {
   autoStartDaemon: boolean;
 }
 
-export function resolveConfig(raw: KnowCodeConfig): ResolvedKnowCodeConfig {
+const DEFAULT_DAEMON_PORT = 48123;
+const DEFAULT_DATA_DIR = '.knowcode';
+const DEFAULT_MAX_FILE_SIZE = 1024 * 1024;
+const DEFAULT_BLAST_RADIUS_DEPTH = 3;
+
+/** Coerce to a finite number, or fall back to the default. */
+function finiteNumber(value: unknown, fallback: number): number {
+  const n = typeof value === 'number' ? value : Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+/** Coerce to a positive integer, or fall back to the default. */
+function positiveInt(value: unknown, fallback: number): number {
+  const n = finiteNumber(value, fallback);
+  return Number.isInteger(n) && n > 0 ? n : fallback;
+}
+
+/**
+ * Normalize raw plugin config into fully-defaulted values.
+ *
+ * Exported (and used by the Standard Schema validator below) so there is exactly
+ * one place that decides defaults.
+ */
+export function resolveConfig(raw: KnowCodeConfig | undefined | null): ResolvedKnowCodeConfig {
+  const source = (raw && typeof raw === 'object' ? raw : {}) as KnowCodeConfig;
   return {
-    falkordbUrl: raw.falkordbUrl ?? '',
-    daemonPort: raw.daemonPort ?? 48123,
-    dataDir: raw.dataDir ?? '.knowcode',
-    maxFileSize: raw.maxFileSize ?? 1024 * 1024,
-    blastRadiusMaxDepth: raw.blastRadiusMaxDepth ?? 3,
-    autoStartDaemon: raw.autoStartDaemon ?? true,
+    falkordbUrl: typeof source.falkordbUrl === 'string' ? source.falkordbUrl : '',
+    daemonPort: positiveInt(source.daemonPort, DEFAULT_DAEMON_PORT),
+    dataDir:
+      typeof source.dataDir === 'string' && source.dataDir.length > 0 ? source.dataDir : DEFAULT_DATA_DIR,
+    maxFileSize: positiveInt(source.maxFileSize, DEFAULT_MAX_FILE_SIZE),
+    blastRadiusMaxDepth: positiveInt(source.blastRadiusMaxDepth, DEFAULT_BLAST_RADIUS_DEPTH),
+    autoStartDaemon: source.autoStartDaemon !== false,
   };
 }
+
+/**
+ * Standard Schema v1 validator consumed by Cordis at plugin load time.
+ *
+ * @see https://github.com/standard-schema/standard-schema
+ */
+export const KnowCodeConfig = {
+  '~standard': {
+    version: 1 as const,
+    vendor: 'dsh-knowcode',
+    validate(value: unknown): { value: ResolvedKnowCodeConfig } {
+      return { value: resolveConfig(value as KnowCodeConfig) };
+    },
+  },
+};

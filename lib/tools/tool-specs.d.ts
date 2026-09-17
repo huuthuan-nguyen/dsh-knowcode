@@ -1,8 +1,9 @@
-import type { ParameterSchemaSpec } from '@deepseek-ai/dsh-tools';
+import { type JsonSchemaObject } from './json-schema.js';
 export interface KnowCodeToolSpec {
     readonly name: string;
     readonly description: string;
-    readonly parameters: ParameterSchemaSpec;
+    /** Standard JSON Schema (object-rooted). Sent verbatim to the model provider. */
+    readonly parameters: JsonSchemaObject;
     readonly action: string;
     readonly aliases?: readonly string[];
 }

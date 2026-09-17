@@ -6,7 +6,7 @@
   },
   "homepage": "https://github.com/huuthuan-nguyen/dsh-knowcode#readme",
   "name": "dsh-knowcode",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Unified Code Graph & Knowledge Base Plugin for DeepSeek Harness powered by Embedded FalkorDB",
   "type": "module",
   "main": "lib/index.js",
@@ -55,12 +55,15 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
-    "@deepseek-ai/dsh-agent": "*",
-    "@deepseek-ai/dsh-invariants": "*",
-    "@deepseek-ai/dsh-shell": "*",
-    "@deepseek-ai/dsh-system-prompt": "*",
-    "@deepseek-ai/dsh-tools": "*",
-    "@deepseek-ai/schemastery": "*"
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/cordis": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-tools": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/node": "^22.13.0",

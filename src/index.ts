@@ -1,58 +1,86 @@
 import type { Context } from '@deepseek-ai/cordis';
-import { defineTool, type ToolRunContext } from '@deepseek-ai/dsh-tools';
-import { KnowCodeConfig, resolveConfig, type ResolvedKnowCodeConfig } from './config.js';
+import type { ToolRunContext, JsonSchemaNode } from '@deepseek-ai/dsh-tools';
+import { KnowCodeConfig, resolveConfig, type KnowCodeConfig as KnowCodeConfigShape } from './config.js';
 import { KNOWCODE_SYSTEM_PROMPT } from './prompt.js';
 import { knowCodeToolSpecs } from './tools/tool-specs.js';
 import { executeKnowCodeTool, type ExecutionResult } from './tools/dispatcher.js';
+import type { TextContentBlock } from './tools/json-schema.js';
+import { asToolParameters } from './tools/json-schema.js';
+
+/**
+ * Canonical result schema for every KnowCode tool.
+ *
+ * Declared as standard JSON Schema. The registry asserts this at registration
+ * time (`assertSupportedJsonSchema`), which rejects `defineTool` author
+ * shorthand such as `required: true` inside a property — `required` must be an
+ * object-level array of property names.
+ */
+export const KNOWCODE_OUTPUT_SCHEMA: JsonSchemaNode = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    kind: { type: 'string', const: 'knowcode' },
+    action: { type: 'string' },
+    content: { type: 'string' },
+  },
+  required: ['kind', 'action', 'content'],
+};
 
 export const name = 'knowcode';
 export const inject = ['tools', 'systemPrompt'];
 export const Config = KnowCodeConfig;
 
-export const KNOWCODE_OUTPUT_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    kind: { type: 'string', const: 'knowcode', required: true },
-    action: { type: 'string', required: true },
-    content: { type: 'string', required: true },
-  },
-} as const;
+/** Render the model-facing text for a completed KnowCode call. */
+function renderResult(_args: unknown, value: any): TextContentBlock[] {
+  return [{ type: 'text', text: value?.content ?? '' }];
+}
 
-export function apply(ctx: Context, rawConfig: KnowCodeConfig): void {
-  const config: ResolvedKnowCodeConfig = resolveConfig(rawConfig);
+/** Extract the first text block of a harness tool result, tolerating absence. */
+function firstText(result: any): string {
+  const block = result?.content?.[0];
+  return block && block.type === 'text' ? block.text : '';
+}
 
-  // Register each tool in the catalog (including backward-compatible aliases)
+export function apply(ctx: Context, rawConfig: KnowCodeConfigShape): void {
+  const config = resolveConfig(rawConfig);
+
+  // Register each tool in the catalog (including backward-compatible aliases).
+  //
+  // The definition is a plain object built with ZERO runtime harness imports.
+  // Importing `@deepseek-ai/dsh-tools` here would let the plugin evaluate a
+  // second copy of that package under the harness's `runtime` resolution mode;
+  // its private scheduler `Symbol()` would then mismatch the host's, leaving
+  // `registry[TOOL_RUNTIME_SCHEDULER]` undefined and aborting every tool call
+  // with "Cannot read properties of undefined (reading 'prepare')".
   for (const spec of knowCodeToolSpecs) {
     const registerOne = (toolName: string) => {
-      ctx.tools.register(
-        defineTool({
-          name: toolName,
-          description: spec.description,
-          parameters: spec.parameters,
-          output: {
-            schema: KNOWCODE_OUTPUT_SCHEMA,
-            render: (_args, value: ExecutionResult) => [{ type: 'text', text: value.content }],
-            presentationMeta: (_args, value: ExecutionResult) => ({
-              action: value.action,
-            }),
-          },
-          execute: async (args: any, runCtx: ToolRunContext) => {
-            const sessionCwd = runCtx.agent?.session.header.cwd ?? process.cwd();
-            return await executeKnowCodeTool(spec.action, args, sessionCwd, config.daemonPort);
-          },
-          presentCall: (_args: any) => ({
-            card: 'terminal',
-            title: toolName,
-            output: `[KnowCode] Running ${toolName}...`,
+      ctx.tools.register({
+        name: toolName,
+        description: spec.description,
+        // Standard JSON Schema, sent verbatim to the model provider.
+        parameters: asToolParameters(spec.parameters),
+        output: {
+          schema: KNOWCODE_OUTPUT_SCHEMA,
+          render: renderResult,
+          presentationMeta: (_args: unknown, value: any) => ({
+            action: value?.action ?? toolName,
           }),
-          presentResult: (_args: any, result: any) => {
-            const block = result.content?.[0];
-            const text = block && block.type === 'text' ? block.text : '';
-            return { card: 'terminal', output: text };
-          },
-        })
-      );
+        },
+        execute: async (args: any, runCtx: ToolRunContext) => {
+          const sessionCwd = runCtx.agent?.session.header.cwd ?? process.cwd();
+          return await executeKnowCodeTool(spec.action, args, sessionCwd, config.daemonPort);
+        },
+        // `TerminalCallView` accepts only { card, title, description?, cwd? }.
+        presentCall: () => ({
+          card: 'terminal' as const,
+          title: toolName,
+          description: `[KnowCode] ${spec.action} — querying the embedded FalkorDB code graph`,
+        }),
+        presentResult: (_args: unknown, result: any) => ({
+          card: 'terminal' as const,
+          output: firstText(result),
+        }),
+      });
     };
 
     registerOne(spec.name);

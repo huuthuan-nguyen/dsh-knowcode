@@ -1,4 +1,14 @@
-import z from '@deepseek-ai/schemastery';
+/**
+ * KnowCode plugin configuration.
+ *
+ * Cordis validates a plugin's `Config` through Standard Schema v1
+ * (`ctx` reads `Config['~standard'].validate(raw)`), so the schema is declared
+ * by hand instead of pulling in `@deepseek-ai/schemastery`.
+ *
+ * This keeps the plugin free of runtime harness imports: importing a harness
+ * package here could evaluate a second copy of it, which mismatches the
+ * harness's private scheduler `Symbol()` and breaks tool execution.
+ */
 export interface KnowCodeConfig {
     /** Optional custom FalkorDB URL (e.g. redis://127.0.0.1:6379). Defaults to embedded FalkorDB. */
     falkordbUrl?: string;
@@ -13,7 +23,6 @@ export interface KnowCodeConfig {
     /** Auto-start daemon when DSH launches if not running (default: true). */
     autoStartDaemon?: boolean;
 }
-export declare const KnowCodeConfig: z<KnowCodeConfig>;
 export interface ResolvedKnowCodeConfig {
     falkordbUrl: string;
     daemonPort: number;
@@ -22,4 +31,24 @@ export interface ResolvedKnowCodeConfig {
     blastRadiusMaxDepth: number;
     autoStartDaemon: boolean;
 }
-export declare function resolveConfig(raw: KnowCodeConfig): ResolvedKnowCodeConfig;
+/**
+ * Normalize raw plugin config into fully-defaulted values.
+ *
+ * Exported (and used by the Standard Schema validator below) so there is exactly
+ * one place that decides defaults.
+ */
+export declare function resolveConfig(raw: KnowCodeConfig | undefined | null): ResolvedKnowCodeConfig;
+/**
+ * Standard Schema v1 validator consumed by Cordis at plugin load time.
+ *
+ * @see https://github.com/standard-schema/standard-schema
+ */
+export declare const KnowCodeConfig: {
+    '~standard': {
+        version: 1;
+        vendor: string;
+        validate(value: unknown): {
+            value: ResolvedKnowCodeConfig;
+        };
+    };
+};

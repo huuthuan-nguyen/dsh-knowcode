@@ -393,6 +393,42 @@ dsh plugin add --profile web dsh-knowcode
 
 ---
 
+## 🧯 Compatibility & Troubleshooting
+
+### Zero-dependency by design
+
+`dsh-knowcode` declares **no runtime dependency on any `@deepseek-ai/*` package**. Its compiled output imports nothing but its own relative modules; harness types are pulled in with `import type` only, which TypeScript erases entirely.
+
+This is deliberate and load-bearing. DSH `0.1.6-alpha.2` changed the default `resolutionMode` to `runtime`, which loads the harness from its compiled artifacts. A plugin that *imports* a harness package at runtime can end up evaluating a **second copy** of it — and because `@deepseek-ai/dsh-tools` keys its tool scheduler on a module-private `Symbol()`:
+
+```ts
+export const TOOL_RUNTIME_SCHEDULER: unique symbol = Symbol('@deepseek-ai/dsh-tools.scheduler')
+```
+
+...the second copy's `Symbol()` no longer matches the host's. `registry[TOOL_RUNTIME_SCHEDULER]` resolves to `undefined`, and **every tool call aborts** with:
+
+```
+Cannot read properties of undefined (reading 'prepare')
+```
+
+### Symptoms
+
+| Symptom | Cause |
+|---|---|
+| `Cannot read properties of undefined (reading 'prepare')` on every KnowCode tool call | The plugin (or another plugin) imported `@deepseek-ai/dsh-tools` at runtime |
+| Tools listed but instantly fail, while other plugins work | Same — this plugin's `Symbol()` mismatches the host's |
+| Provider rejects the tool schema / the model cannot see parameters | A tool declared `defineTool` author shorthand (`required: true`) instead of real JSON Schema |
+
+### How this plugin avoids it
+
+1. **No runtime harness imports.** Tool definitions are plain objects; verified by a regression test that scans every compiled `.js` file for harness imports.
+2. **Standard JSON Schema only.** `parameters` and `output.schema` use `required: [...]` arrays of property names. `required: true` inside a property is `defineTool` author shorthand and is rejected by the registry's `assertSupportedJsonSchema`. The test suite additionally validates every schema with the harness's own validator.
+3. **Standard Schema v1 config.** `Config['~standard'].validate()` is implemented by hand, so no `@deepseek-ai/schemastery` import is needed.
+
+If you maintain another DSH plugin and hit this error, the fix is the same: drop the runtime import of `@deepseek-ai/dsh-tools`, build the `ToolDefinition` as a plain object, and declare real JSON Schema.
+
+---
+
 ## 🏗 Safe Refactoring Protocol for Agents
 
 The plugin automatically injects the **KnowCode Safe Refactoring Protocol** into the agent's system prompt:
@@ -423,6 +459,10 @@ Runs:
 - Embedded FalkorDB startup, Cypher schema, and graph queries
 - Daemon HTTP/JSON RPC server and debounced file watcher
 - Cordis plugin registration and system prompt injection
+- `[trace]` logging: daemon startup, index phases, stale check, RPC/search lines
+- Tool-schema contract: every tool validated against the harness's own
+  `assertSupportedJsonSchema`, plus a regression guard asserting the compiled
+  output has **zero runtime `@deepseek-ai/*` imports**
 
 ---
 
