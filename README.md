@@ -598,6 +598,6 @@ Runs:
 
 ---
 
-## 📄 License
+## License
 
-MIT © [dsh-knowcode contributors](LICENSE)
+MIT © 2026-present Thuan Nguyen
