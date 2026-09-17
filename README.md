@@ -595,6 +595,9 @@ Runs:
 - Tool-schema contract: every tool validated against the harness's own
   `assertSupportedJsonSchema`, plus a guard asserting the compiled output has
   **zero runtime `@deepseek-ai/*` imports**
+- Tool-output contract: every return branch of every action validated against
+  `KNOWCODE_OUTPUT_SCHEMA` with the harness's own `validateJsonSchemaValue`, so an
+  undeclared field can never reach the harness and fail with `INVALID_TOOL_OUTPUT`
 
 ---
 

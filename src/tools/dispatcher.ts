@@ -22,11 +22,20 @@ import {
   renderStorageMigrationImpact,
 } from '../render.js';
 
+/**
+ * The value every KnowCode tool returns.
+ *
+ * These three fields are exactly the properties declared by
+ * `KNOWCODE_OUTPUT_SCHEMA` (which sets `additionalProperties: false`), because
+ * the harness validates this object against that schema before rendering and
+ * throws `ToolOutputError` on any undeclared key. Adding a field here without
+ * adding it to the schema breaks every tool call at runtime, so
+ * `tests/tool-output-contract.test.ts` pins the two together.
+ */
 export interface ExecutionResult {
   kind: 'knowcode';
   action: string;
   content: string;
-  raw?: any;
 }
 
 export async function executeKnowCodeTool(
@@ -190,7 +199,7 @@ export async function executeKnowCodeTool(
     switch (action) {
       case 'status': {
         const stats = await client.getStatus();
-        return { kind: 'knowcode', action: rawAction, content: renderStatus(stats), raw: stats };
+        return { kind: 'knowcode', action: rawAction, content: renderStatus(stats) };
       }
 
       case 'sync': {
@@ -199,38 +208,37 @@ export async function executeKnowCodeTool(
           kind: 'knowcode',
           action: rawAction,
           content: `✅ **KnowCode Sync Complete**: Indexed ${res.filesIndexed} files and ${res.symbolsIndexed} symbols in ${res.timeMs}ms.`,
-          raw: res,
         };
       }
 
       case 'explore': {
         const data = await client.call('explore', { limit: args.limit });
-        return { kind: 'knowcode', action: rawAction, content: renderExplore(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderExplore(data) };
       }
 
       case 'symbol_definition': {
         const data = await client.call('symbol_definition', { name: args.name, file: args.file });
-        return { kind: 'knowcode', action: rawAction, content: renderSymbolDefinition(data, args.name), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderSymbolDefinition(data, args.name) };
       }
 
       case 'blast_radius': {
         const data = await client.call('blast_radius', { symbol: args.symbol, depth: args.depth });
-        return { kind: 'knowcode', action: rawAction, content: renderBlastRadius(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderBlastRadius(data) };
       }
 
       case 'callers': {
         const data = await client.call('callers', { symbol: args.symbol });
-        return { kind: 'knowcode', action: rawAction, content: renderCallers(args.symbol, data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderCallers(args.symbol, data) };
       }
 
       case 'callees': {
         const data = await client.call('callees', { symbol: args.symbol });
-        return { kind: 'knowcode', action: rawAction, content: renderCallees(args.symbol, data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderCallees(args.symbol, data) };
       }
 
       case 'detect_cycles': {
         const data = await client.call('detect_cycles');
-        return { kind: 'knowcode', action: rawAction, content: renderCycles(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderCycles(data) };
       }
 
       case 'affected_tests': {
@@ -239,37 +247,37 @@ export async function executeKnowCodeTool(
           data.length === 0
             ? 'No affected test files found for the given sources.'
             : `### 🧪 Affected Test Suites (${data.length} files):\n` + data.map((t: string) => `- \`${t}\``).join('\n');
-        return { kind: 'knowcode', action: rawAction, content: text, raw: data };
+        return { kind: 'knowcode', action: rawAction, content: text };
       }
 
       case 'porting_contract': {
         const data = await client.call('porting_contract', { symbol: args.symbol });
-        return { kind: 'knowcode', action: rawAction, content: renderPortingContract(data, args.symbol), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderPortingContract(data, args.symbol) };
       }
 
       case 'call_path': {
         const data = await client.call('call_path', { fromSymbol: args.fromSymbol, toSymbol: args.toSymbol });
-        return { kind: 'knowcode', action: rawAction, content: renderCallPath(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderCallPath(data) };
       }
 
       case 'subtypes': {
         const data = await client.call('subtypes', { symbol: args.symbol });
-        return { kind: 'knowcode', action: rawAction, content: renderSubtypes(args.symbol, data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderSubtypes(args.symbol, data) };
       }
 
       case 'search_symbols': {
         const data = await client.call('search_symbols', { pattern: args.pattern, kind: args.kind, limit: args.limit });
-        return { kind: 'knowcode', action: rawAction, content: renderSymbolSearchResults(args.pattern, data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderSymbolSearchResults(args.pattern, data) };
       }
 
       case 'unused_symbols': {
         const data = await client.call('unused_symbols', { limit: args.limit });
-        return { kind: 'knowcode', action: rawAction, content: renderUnusedSymbols(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderUnusedSymbols(data) };
       }
 
       case 'git_diff_impact': {
         const data = await client.call('git_diff_impact', { baseRef: args.baseRef });
-        return { kind: 'knowcode', action: rawAction, content: renderGitDiffImpact(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderGitDiffImpact(data) };
       }
 
       case 'cross_paradigm_blueprint': {
@@ -277,7 +285,7 @@ export async function executeKnowCodeTool(
           symbol: args.symbol,
           targetLanguage: args.targetLanguage,
         });
-        return { kind: 'knowcode', action: rawAction, content: renderCrossParadigmBlueprint(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderCrossParadigmBlueprint(data) };
       }
 
       case 'third_party_slice': {
@@ -285,7 +293,7 @@ export async function executeKnowCodeTool(
           libraryPrefix: args.libraryPrefix,
           targetLanguage: args.targetLanguage,
         });
-        return { kind: 'knowcode', action: rawAction, content: renderThirdPartyUsageSlice(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderThirdPartyUsageSlice(data) };
       }
 
       case 'similar_functions': {
@@ -294,7 +302,7 @@ export async function executeKnowCodeTool(
           threshold: args.threshold,
           minLines: args.minLines,
         });
-        return { kind: 'knowcode', action: rawAction, content: renderDuplicateClones(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderDuplicateClones(data) };
       }
 
       case 'spec_code_flow': {
@@ -302,7 +310,7 @@ export async function executeKnowCodeTool(
           query: args.query,
           flowDepth: args.flowDepth,
         });
-        return { kind: 'knowcode', action: rawAction, content: renderFeatureCodeFlow(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderFeatureCodeFlow(data) };
       }
 
       case 'symbol_spec_features': {
@@ -310,7 +318,7 @@ export async function executeKnowCodeTool(
           symbol: args.symbol,
           searchCallers: args.searchCallers,
         });
-        return { kind: 'knowcode', action: rawAction, content: renderSymbolSpecFeatures(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderSymbolSpecFeatures(data) };
       }
 
       case 'contract_storage_mapping': {
@@ -319,7 +327,7 @@ export async function executeKnowCodeTool(
           storageTarget: args.storageTarget,
           storageEngine: args.storageEngine,
         });
-        return { kind: 'knowcode', action: rawAction, content: renderContractStorageMapping(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderContractStorageMapping(data) };
       }
 
       case 'storage_migration_impact': {
@@ -328,7 +336,7 @@ export async function executeKnowCodeTool(
           attribute: args.attribute,
           action: args.action,
         });
-        return { kind: 'knowcode', action: rawAction, content: renderStorageMigrationImpact(data), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: renderStorageMigrationImpact(data) };
       }
 
       case 'knowledge_search': {
@@ -344,7 +352,7 @@ export async function executeKnowCodeTool(
             lines.push(`_Linked Symbols_: ${item.linkedSymbols.map((s: string) => `\`${s}\``).join(', ')}\n`);
           }
         }
-        return { kind: 'knowcode', action: rawAction, content: lines.join('\n'), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: lines.join('\n') };
       }
 
       case 'knowledge_doc': {
@@ -366,7 +374,7 @@ export async function executeKnowCodeTool(
             lines.push(`- [${r.priority.toUpperCase()}] **${r.title}**: ${r.content}`);
           }
         }
-        return { kind: 'knowcode', action: rawAction, content: lines.join('\n'), raw: data };
+        return { kind: 'knowcode', action: rawAction, content: lines.join('\n') };
       }
 
       case 'cypher': {
@@ -375,7 +383,6 @@ export async function executeKnowCodeTool(
           kind: 'knowcode',
           action: rawAction,
           content: '```json\n' + JSON.stringify(data.data ?? [], null, 2) + '\n```',
-          raw: data.data,
         };
       }
 
