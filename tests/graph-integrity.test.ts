@@ -817,6 +817,99 @@ test('a usage slice counts only calls made on the library', async () => {
   }
 });
 
+
+test('no database binary is ever read, and schema comes only from repository text', async () => {
+  // Two guarantees in one place:
+  //  - a running database's files are never opened by the indexer or the watcher;
+  //  - schema/DDL knowledge is derived only from text committed to the repository.
+  const artifacts: Array<[string, Buffer]> = [
+    ['app.sqlite', Buffer.from('SQLite format 3\0' + 'A'.repeat(400))],
+    ['app.sqlite-wal', Buffer.from('\0\0\0\0wal')],
+    ['data.db', Buffer.from('SQLite format 3\0more')],
+    ['dump.rdb', Buffer.from('REDIS0011\0\0\0')],
+    ['appendonly.aof', Buffer.from('*2\r\n$6\r\nSELECT\r\n')],
+    ['users.ibd', Buffer.from('\0'.repeat(300))],
+    ['orders.frm', Buffer.from('\0\0\0'.repeat(50))],
+    ['collection-1.wt', Buffer.from('\0\0WiredTiger')],
+    ['_0.cfs', Buffer.from('\0'.repeat(200))],
+    ['segment.si', Buffer.from('\0'.repeat(100))],
+    ['000003.sst', Buffer.from('\0'.repeat(150))],
+  ];
+
+  const files: Record<string, string | Buffer> = {};
+  for (const [name, buf] of artifacts) files[name] = buf;
+  // A binary payload behind an allowed extension: only the NUL-byte sniff catches it.
+  files['sneaky.txt'] = Buffer.from('\0\0\0binarypayload');
+  // Repository text that carries schema knowledge.
+  files['migrations/001_init.sql'] =
+    'CREATE TABLE users (\n  id SERIAL PRIMARY KEY,\n  email VARCHAR(255) NOT NULL\n);\n';
+  files['prisma/schema.prisma'] =
+    'datasource db {\n  provider = "postgresql"\n}\n\nmodel Post {\n  id Int @id\n  title String\n}\n';
+  files['proto/user.proto'] = 'message User {\n  string id = 1;\n}\n';
+  files['src/models.ts'] =
+    'import mongoose from "mongoose";\nexport const AccountSchema = new mongoose.Schema({\n  owner: { type: String, required: true },\n});\n';
+  files['openapi.json'] = JSON.stringify({
+    openapi: '3.0.0',
+    components: { schemas: { Payment: { type: 'object', properties: { amount: { type: 'number' } } } } },
+  });
+  files['src/app.ts'] = 'export function boot() { return 1; }\n';
+
+  writeWs(GRAPH_WS, files as Record<string, string>);
+
+  // Unit level: every artifact is refused before a read.
+  for (const [name] of artifacts) {
+    const decision = decideIndexing(join(GRAPH_WS, name), 4 * 1024 * 1024, name);
+    assert.strictEqual(decision.ok, false, `${name} must never be read`);
+  }
+  assert.strictEqual(
+    decideIndexing(join(GRAPH_WS, 'sneaky.txt'), 4 * 1024 * 1024, 'sneaky.txt').reason,
+    'binary',
+    'a binary payload behind a .txt name must be detected'
+  );
+
+  const port = 48630;
+  const daemon = new KnowCodeDaemon({ workdir: GRAPH_WS, port });
+
+  try {
+    await daemon.start();
+    await daemon.performFullIndex();
+    const client = new KnowCodeRpcClient({ workdir: GRAPH_WS, port });
+
+    // No File node may exist for a database artifact.
+    const fileRows = await client.query('MATCH (f:File) RETURN f.path AS p');
+    const paths = (fileRows.data as any[]).map((r) => r.p).sort();
+    assert.deepStrictEqual(
+      paths,
+      ['src/app.ts', 'src/models.ts'],
+      `only source files may be indexed, got: ${JSON.stringify(paths)}`
+    );
+
+    // Schema knowledge comes from the repository text above.
+    const contracts = await client.query('MATCH (c:ContractEntity) RETURN c.name AS n ORDER BY n');
+    assert.deepStrictEqual(
+      (contracts.data as any[]).map((r) => r.n).sort(),
+      ['Payment', 'User'],
+      'contracts come from the OpenAPI document and the .proto file'
+    );
+
+    const containers = await client.query(
+      'MATCH (sc:StorageContainer) RETURN sc.name AS n, sc.engine AS e ORDER BY n'
+    );
+    const byName = new Map((containers.data as any[]).map((r) => [r.n, r.e]));
+    assert.strictEqual(byName.get('users'), 'sql', 'SQL DDL from the migration');
+    assert.strictEqual(byName.get('Post'), 'sql', 'Prisma model');
+    assert.strictEqual(byName.get('accounts'), 'mongodb', 'Mongoose model in a .ts source file');
+    assert.strictEqual(
+      byName.has('openapi'),
+      false,
+      'an OpenAPI document must not be mistaken for an Elasticsearch mapping'
+    );
+  } finally {
+    await daemon.stop();
+    clean([GRAPH_WS]);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Single instance per workspace
 // ---------------------------------------------------------------------------

@@ -354,7 +354,8 @@ export type ContractFormat =
   | 'openapi_json'
   | 'openapi_yaml'
   | 'json_schema'
-  | 'grpc_proto';
+  | 'grpc_proto'
+  | 'graphql_sdl';
 
 export type StorageEngine =
   | 'sql'

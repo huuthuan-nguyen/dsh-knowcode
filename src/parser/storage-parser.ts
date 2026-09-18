@@ -12,6 +12,161 @@ export class StorageParser {
   /**
    * Parse a Protocol Buffer file (*.proto)
    */
+  /**
+   * Parse a Prisma schema (`schema.prisma`), the model definitions a project keeps
+   * in source. The datasource provider decides the storage engine.
+   */
+  public static parsePrismaSchema(file: string, content: string): StorageContainerDef[] {
+    const containers: StorageContainerDef[] = [];
+
+    const providerMatch = content.match(/datasource\s+\w+\s*\{[^}]*?provider\s*=\s*"([^"]+)"/s);
+    const provider = (providerMatch?.[1] ?? 'sql').toLowerCase();
+    const engine: StorageEngine =
+      provider.includes('mongo')
+        ? 'mongodb'
+        : provider.includes('postgres') || provider.includes('mysql') || provider.includes('sqlite') || provider.includes('sqlserver')
+        ? 'sql'
+        : 'sql';
+
+    const modelRe = /model\s+(\w+)\s*\{([\s\S]*?)\}/g;
+    let model: RegExpExecArray | null;
+    while ((model = modelRe.exec(content)) !== null) {
+      const name = model[1];
+      const attributes: StorageAttributeDef[] = [];
+
+      for (const raw of model[2].split('\n')) {
+        const line = raw.trim();
+        if (!line || line.startsWith('//') || line.startsWith('@@')) continue;
+
+        const field = line.match(/^(\w+)\s+([\w\[\]?]+)(.*)$/);
+        if (!field) continue;
+
+        const rawType = field[2];
+        const modifiers = field[3] ?? '';
+        attributes.push({
+          name: field[1],
+          dataType: rawType,
+          attributeRole: /@id\b/.test(modifiers)
+            ? 'primary_key'
+            : /@relation\b/.test(modifiers)
+            ? 'foreign_key'
+            : 'column',
+          isNullable: rawType.endsWith('?'),
+        });
+      }
+
+      if (attributes.length > 0) {
+        containers.push({
+          name,
+          engine,
+          file,
+          attributes,
+          description: `Prisma model '${name}' (provider: ${provider})`,
+        });
+      }
+    }
+
+    return containers;
+  }
+
+  /**
+   * Parse a GraphQL SDL document into contract entities.
+   *
+   * Root operation types are skipped: `Query`/`Mutation`/`Subscription` describe the
+   * API surface rather than a data shape.
+   */
+  public static parseGraphqlSdl(file: string, content: string): ContractEntityDef[] {
+    const entities: ContractEntityDef[] = [];
+    const typeRe = /(?:^|\n)\s*(?:type|input|interface)\s+(\w+)[^{\n]*\{([\s\S]*?)\}/g;
+
+    let type: RegExpExecArray | null;
+    while ((type = typeRe.exec(content)) !== null) {
+      const name = type[1];
+      if (['Query', 'Mutation', 'Subscription'].includes(name)) continue;
+
+      const fields: ContractFieldDef[] = [];
+      for (const raw of type[2].split('\n')) {
+        const line = raw.trim();
+        if (!line || line.startsWith('#') || line.startsWith('}')) continue;
+
+        const field = line.match(/^(\w+)\s*(?:\([^)]*\))?\s*:\s*([\[\]!\w]+)/);
+        if (!field) continue;
+
+        const rawType = field[2];
+        fields.push({
+          name: field[1],
+          rawType,
+          isRequired: rawType.endsWith('!'),
+          isList: rawType.startsWith('['),
+        });
+      }
+
+      if (fields.length > 0) {
+        entities.push({
+          name,
+          format: 'graphql_sdl',
+          file,
+          fields,
+          description: `GraphQL SDL type '${name}'`,
+        });
+      }
+    }
+
+    return entities;
+  }
+
+  /**
+   * Parse a schema or DDL file **from the repository**.
+   *
+   * The graph is never populated from a live database: this only ever receives text
+   * read from a tracked file — a migration, a `.proto` contract, a Prisma schema, an
+   * OpenAPI document or an Elasticsearch mapping held in source. A running MySQL,
+   * MongoDB, Redis or Elasticsearch instance is never contacted, and its data files
+   * are rejected before being read at all (see `indexable.ts`).
+   *
+   * @param file - workspace-relative path, used to choose the dialect and recorded on the nodes.
+   * @param content - the file's text.
+   * @returns contract entities and storage containers found in that file.
+   */
+  public static parseSchemaFile(
+    file: string,
+    content: string
+  ): { entities: ContractEntityDef[]; containers: StorageContainerDef[] } {
+    const lower = file.toLowerCase();
+    const empty = { entities: [], containers: [] };
+
+    try {
+      if (lower.endsWith('.proto')) {
+        return { entities: StorageParser.parseProtobuf(file, content), containers: [] };
+      }
+      if (lower.endsWith('.xsd') || lower.endsWith('.xml')) {
+        return { entities: StorageParser.parseXmlXsd(file, content), containers: [] };
+      }
+      if (lower.endsWith('.sql') || lower.endsWith('.cql')) {
+        return { entities: [], containers: StorageParser.parseSqlDdl(file, content) };
+      }
+      if (lower.endsWith('.prisma')) {
+        return { entities: [], containers: StorageParser.parsePrismaSchema(file, content) };
+      }
+      if (lower.endsWith('.graphql') || lower.endsWith('.gql')) {
+        return { entities: StorageParser.parseGraphqlSdl(file, content), containers: [] };
+      }
+      if (lower.endsWith('.json') || lower.endsWith('.yaml') || lower.endsWith('.yml')) {
+        // An OpenAPI/JSON-Schema document describes a contract; an Elasticsearch
+        // mapping describes storage. Try both — each parser is tolerant of the other.
+        return {
+          entities: StorageParser.parseOpenApiOrJsonSchema(file, content),
+          containers: StorageParser.parseElasticMapping(file, content),
+        };
+      }
+    } catch {
+      // A malformed schema must not abort indexing of the rest of the workspace.
+      return empty;
+    }
+
+    return empty;
+  }
+
   public static parseProtobuf(file: string, content: string): ContractEntityDef[] {
     const entities: ContractEntityDef[] = [];
     const messageRegex = /message\s+([A-Za-z0-9_]+)\s*\{([\s\S]*?)\}/g;
@@ -253,7 +408,19 @@ export class StorageParser {
 
     try {
       const parsed = JSON.parse(content);
-      const properties = parsed.mappings?.properties ?? parsed.properties ?? {};
+
+      // A mapping is an object nested under `mappings`, or a root `properties` in a
+      // file whose name says so. Anything else — an OpenAPI document, a package
+      // manifest — is not an index, and previously still produced an empty container
+      // named after the file.
+      const looksLikeMapping = /mapping/i.test(file);
+      const properties =
+        parsed.mappings?.properties ?? (looksLikeMapping ? parsed.properties : undefined);
+
+      if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+        return containers;
+      }
+
       const indexName = file.replace(/.*\/|\.mapping\.json|\.json/g, '') || 'index';
 
       const attributes: StorageAttributeDef[] = [];
@@ -266,6 +433,8 @@ export class StorageParser {
           vectorDimension: propDef.dims,
         });
       }
+
+      if (attributes.length === 0) return containers;
 
       containers.push({
         name: indexName,

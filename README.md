@@ -518,11 +518,34 @@ dsh plugin add --profile web dsh-knowcode
 | `autoStartDaemon` | `true` | Start a daemon automatically when a tool runs in a workspace that has none, instead of replying with a "run `knowcode serve .`" notice. The daemon is spawned detached from this package's own CLI and its output is appended to `<dataDir>/serve.log`. Concurrent calls share one start attempt; the first call may wait a few hundred milliseconds. |
 | `stopDaemonOnExit` | `true` | Stop the daemons **this process** spawned when the harness exits. Detached daemons outlive a tool call, so without this, quitting DSH would leave one running per project — each holding an embedded FalkorDB process, an HTTP server, a file watcher and a database file. Cleanup runs from the plugin's disposal effect, which DSH triggers on `SIGINT` (Ctrl+C) and `SIGTERM`; `SIGKILL` bypasses disposal and is the one case that still orphans a daemon. Daemons you started yourself with `knowcode serve .` are never touched. |
 
-### Files that are never indexed
+### Databases are never read
 
-Discovery uses an extension allowlist — code (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `c`, `cpp`, `h`, `hpp`) and documentation (`md`, `mdx`, `markdown`, `txt`) — so databases, archives, media and build artefacts are excluded by construction, never by name.
+**A running database is never contacted, and its files are never opened.** Knowledge about storage is derived only from text committed to the repository — see *Schema comes from source* below.
 
-The file watcher applies the same decision *before* reading a file, which matters for databases: a SQLite database being written by a running application fires a change on every write, and previously each one was read into memory and hashed before being discarded. `.db`, `.sqlite`, `.sqlite3` and their `-wal`/`-shm`/`-journal` sidecars are now rejected from the path alone. The allowlist and the ignore list live in one module (`src/server/indexable.ts`) shared by discovery, the stale check and the watcher, so they cannot drift apart.
+Three layers enforce this, in order, before any content is read:
+
+1. **Extension allowlist.** Discovery accepts only code (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `c`, `cpp`, `h`, `hpp`), documentation (`md`, `mdx`, `markdown`, `txt`) and schema text. Everything else — including every extensionless data file — is out of scope by construction, never by name.
+2. **Non-text denylist.** Database artifacts are named explicitly so the intent is testable and a future allowlist change cannot quietly admit one: SQLite (`.db`, `.db3`, `.sqlite`, `.sqlite3` and their `-wal`/`-shm`/`-journal` sidecars), Redis (`.rdb`, `.aof`), MySQL/MariaDB (`.ibd`, `.frm`, `.myd`, `.myi`, `.arm`), MongoDB/WiredTiger (`.wt`, `.bson`, `.ns`, `.turtle`), Elasticsearch/Lucene (`.cfs`, `.cfe`, `.si`, `.del`, `.fdt`, `.fdx`, `.fnm`, `.nvd`, `.nvm`, `.tim`, `.tip`, `.kdd`, `.kdi`, `.liv`), LevelDB/RocksDB (`.sst`, `.ldb`), DuckDB (`.duckdb`) and archives, media and compiled objects.
+3. **Binary sniff.** The first 512 bytes are checked for a NUL byte, the same heuristic git uses, so a database dumped behind an innocent name is still refused.
+
+All three live in `src/server/indexable.ts`, shared by discovery, the stale check and the file watcher, so they cannot drift apart. The watcher in particular decides *before* reading: a SQLite database being written by a running application fires a change on every write, and each one used to be read into memory and hashed before being discarded.
+
+### Schema comes from source
+
+Storage knowledge is read only from text in the repository, routed by file type:
+
+| Source | Becomes |
+|---|---|
+| `*.sql`, `*.cql` migrations and DDL | `StorageContainer` (SQL) |
+| `*.prisma` | `StorageContainer`, engine taken from the datasource provider |
+| Mongoose `new Schema({…})` in `*.ts`/`*.js` model files | `StorageContainer` (MongoDB) |
+| `*.proto` | `ContractEntity` (gRPC) |
+| `*.xsd` | `ContractEntity` (XML) |
+| `*.graphql`, `*.gql` | `ContractEntity` (SDL; `Query`/`Mutation`/`Subscription` skipped) |
+| OpenAPI / JSON Schema (`openapi*.json`, `*.schema.json`, `openapi*.yaml`) | `ContractEntity` |
+| Elasticsearch mappings (`*mapping*.json`, `mappings.properties`) | `StorageContainer` (Elasticsearch) |
+
+JSON and YAML are discovered but accepted only when the file name looks like a schema, so lockfiles and CI configuration are never read. Each file's definitions are replaced on re-index, so a model deleted from a schema disappears from the graph, and a malformed schema is skipped rather than aborting the run.
 
 ### One daemon per workspace
 

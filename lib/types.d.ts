@@ -354,7 +354,7 @@ export interface SymbolSpecFeaturesResult {
     }>;
     summary: string;
 }
-export type ContractFormat = 'xml_xsd' | 'xml_wsdl' | 'openapi_json' | 'openapi_yaml' | 'json_schema' | 'grpc_proto';
+export type ContractFormat = 'xml_xsd' | 'xml_wsdl' | 'openapi_json' | 'openapi_yaml' | 'json_schema' | 'grpc_proto' | 'graphql_sdl';
 export type StorageEngine = 'sql' | 'mongodb' | 'redis' | 'elasticsearch' | 'timeseries' | 'graph' | 'vector';
 export interface ContractFieldDef {
     name: string;

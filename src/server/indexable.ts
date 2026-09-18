@@ -1,4 +1,4 @@
-import { statSync } from 'node:fs';
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { extname } from 'node:path';
 
 /**
@@ -37,6 +37,85 @@ export const INDEXABLE_EXTENSIONS: ReadonlySet<string> = new Set([
 /** fast-glob pattern covering exactly {@link INDEXABLE_EXTENSIONS}. */
 export const INDEXABLE_GLOB =
   '**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,c,cpp,h,hpp,md,mdx,markdown,txt}';
+
+/**
+ * Text formats that describe a schema or DDL.
+ *
+ * These are read **only** as repository source: a `.sql` migration, a `.proto`
+ * contract or a Prisma schema is text a developer wrote and committed. The running
+ * database is never consulted — its files are binaries and stay excluded below.
+ */
+export const SCHEMA_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.sql',
+  '.cql',
+  '.prisma',
+  '.proto',
+  '.xsd',
+  '.graphql',
+  '.gql',
+  '.avsc',
+]);
+
+/**
+ * fast-glob pattern for schema sources.
+ *
+ * JSON and YAML are included because OpenAPI documents and Elasticsearch mappings
+ * live there; `isSchemaPath` then accepts only names that look like a schema, so
+ * lockfiles and CI configuration are discovered but never read.
+ */
+export const SCHEMA_GLOB = '**/*.{sql,cql,prisma,proto,xsd,graphql,gql,avsc,json,yaml,yml}';
+
+/**
+ * JSON/YAML documents that carry a schema or mapping, matched by file name so
+ * lockfiles and CI configuration are not pulled in.
+ */
+const SCHEMA_JSON_NAME =
+  /(^|\/)(openapi|swagger|[^/]*\.schema|[^/]*-schema|[^/]*mapping[^/]*|[^/]*elasticsearch[^/]*)\.(json|ya?ml)$/i;
+
+/** Whether a path describes a schema or DDL in source form. */
+export function isSchemaPath(relPath: string): boolean {
+  const norm = relPath.replace(/\\/g, '/');
+  if (SCHEMA_EXTENSIONS.has(extname(norm).toLowerCase())) return true;
+  return SCHEMA_JSON_NAME.test(norm);
+}
+
+/**
+ * Whether a file may be read at all.
+ *
+ * Anything outside this set — every database binary, archive, media file and
+ * extensionless data file — is never opened, so a running MySQL, MongoDB, Redis or
+ * Elasticsearch instance cannot have its files read by the indexer or the watcher.
+ */
+export function isReadableTextPath(relPath: string): boolean {
+  if (isIgnoredPath(relPath)) return false;
+  if (isNonTextPath(relPath)) return false;
+  const ext = extname(relPath).toLowerCase();
+  return INDEXABLE_EXTENSIONS.has(ext) || isSchemaPath(relPath);
+}
+
+/**
+ * Whether a file looks binary, by the same NUL-byte heuristic git uses.
+ *
+ * A last line of defence for a data file whose name gives nothing away: it is
+ * applied before the content is read as text.
+ */
+export function looksBinary(absPath: string, sniffBytes = 512): boolean {
+  try {
+    const fd = openSync(absPath, 'r');
+    try {
+      const buffer = Buffer.alloc(sniffBytes);
+      const read = readSync(fd, buffer, 0, sniffBytes, 0);
+      for (let i = 0; i < read; i++) {
+        if (buffer[i] === 0) return true;
+      }
+      return false;
+    } finally {
+      closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+}
 
 /** Directory path fragments never indexed and never watched. */
 export const IGNORED_DIR_FRAGMENTS: readonly string[] = [
@@ -84,6 +163,36 @@ export const NON_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
   '.sqlite-shm',
   '.sqlite3-wal',
   '.sqlite3-shm',
+  // MySQL / MariaDB data files
+  '.ibd',
+  '.frm',
+  '.myd',
+  '.myi',
+  '.arm',
+  // MongoDB / WiredTiger
+  '.wt',
+  '.bson',
+  '.ns',
+  '.turtle',
+  // Elasticsearch / Lucene index segments
+  '.cfs',
+  '.cfe',
+  '.si',
+  '.del',
+  '.fdt',
+  '.fdx',
+  '.fnm',
+  '.nvd',
+  '.nvm',
+  '.tim',
+  '.tip',
+  '.kdd',
+  '.kdi',
+  '.liv',
+  // LevelDB / RocksDB
+  '.sst',
+  '.ldb',
+  // Misc database and binary payloads
   '.bin',
   '.dat',
   '.pack',
@@ -142,16 +251,20 @@ export function isNonTextPath(relPath: string): boolean {
 
 /** Whether a path's contents are worth reading at all. */
 export function isIndexablePath(relPath: string): boolean {
-  if (isIgnoredPath(relPath)) return false;
-  if (isNonTextPath(relPath)) return false;
-  return INDEXABLE_EXTENSIONS.has(extname(relPath).toLowerCase());
+  return isReadableTextPath(relPath);
 }
 
 /** Largest file read and indexed when no limit is configured. */
 export const DEFAULT_MAX_FILE_SIZE = 1024 * 1024;
 
 /** Why a file was not indexed. */
-export type SkipReason = 'ignored' | 'not-text' | 'extension' | 'too-large' | 'unreadable';
+export type SkipReason =
+  | 'ignored'
+  | 'not-text'
+  | 'extension'
+  | 'too-large'
+  | 'unreadable'
+  | 'binary';
 
 export interface IndexDecision {
   ok: boolean;
@@ -178,7 +291,7 @@ export function decideIndexing(
 ): IndexDecision {
   if (isIgnoredPath(relPath)) return { ok: false, reason: 'ignored' };
   if (isNonTextPath(relPath)) return { ok: false, reason: 'not-text' };
-  if (!INDEXABLE_EXTENSIONS.has(extname(relPath).toLowerCase())) return { ok: false, reason: 'extension' };
+  if (!isReadableTextPath(relPath)) return { ok: false, reason: 'extension' };
 
   let size: number;
   try {
@@ -188,5 +301,9 @@ export function decideIndexing(
   }
 
   if (size > maxFileSize) return { ok: false, reason: 'too-large', size };
+
+  // Never decode a binary payload as text, whatever its name.
+  if (looksBinary(absPath)) return { ok: false, reason: 'binary', size };
+
   return { ok: true, size };
 }

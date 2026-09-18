@@ -141,6 +141,23 @@ export class KnowCodeRepository {
   }
 
   /**
+   * Delete the contract entities and storage containers a file declared.
+   *
+   * Without this a model removed from a schema file would survive re-indexing, since
+   * ingestion merges by id and never learns which definitions are gone.
+   */
+  public async deleteSchemaDefinitions(filePath: string): Promise<void> {
+    await this.graph.query(
+      `MATCH (c:ContractEntity {file: $filePath}) DETACH DELETE c`,
+      { params: { filePath } }
+    );
+    await this.graph.query(
+      `MATCH (sc:StorageContainer {file: $filePath}) DETACH DELETE sc`,
+      { params: { filePath } }
+    );
+  }
+
+  /**
    * Delete all existing data for a document (for clean incremental upserts).
    *
    * Sections and rules are also removed by their own document path so orphans

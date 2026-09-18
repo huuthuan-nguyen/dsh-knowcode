@@ -73,8 +73,27 @@ export declare class KnowCodeDaemon {
         filesIndexed: number;
         symbolsIndexed: number;
         docsIndexed: number;
+        /** Contract entities and storage containers ingested from repository schema files. */
+        schemaDefinitions?: number;
         timeMs: number;
     }>;
+    /**
+     * Ingest schema and DDL definitions held in a repository file.
+     *
+     * The graph is populated only from text that a developer committed — migrations,
+     * `.proto` contracts, Prisma schemas, OpenAPI documents, Elasticsearch mappings.
+     * A running database is never queried, and its files are rejected before any read.
+     *
+     * @returns how many definitions were ingested.
+     */
+    /**
+     * Ingest schema definitions declared inside a source file.
+     *
+     * Only textual model declarations are read — a Mongoose schema, or any future ORM
+     * mapping. Nothing here opens or contacts a database.
+     */
+    private ingestCodeSchema;
+    private ingestSchemaContent;
     /**
      * Discover indexable files. Shared by full indexing and the stale check so the
      * two always agree on exactly which files are in scope.

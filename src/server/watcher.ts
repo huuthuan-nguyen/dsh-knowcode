@@ -4,6 +4,7 @@ import { relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { CodeParser } from '../parser/code-parser.js';
 import { DocParser } from '../parser/doc-parser.js';
+import { StorageParser } from '../parser/storage-parser.js';
 import type { KnowCodeRepository } from '../db/client.js';
 import { LinkEngine } from '../parser/link-engine.js';
 import { Tracer, type TraceSink, fmtMs, nsToMs } from './trace.js';
@@ -171,6 +172,7 @@ export class CodeWatcher {
       this.hashes.delete(relPath);
       await this.options.repo.deleteFile(relPath);
       await this.options.repo.deleteDoc(relPath);
+      await this.options.repo.deleteSchemaDefinitions(relPath);
       this.options.onUpdate?.('delete', relPath);
       if (tracing) this.tracer.line(`unlink ${relPath}`);
     }
@@ -219,6 +221,12 @@ export class CodeWatcher {
         await this.options.repo.ingestImports(codeParsed.imports);
         await this.options.repo.ingestCalls(codeParsed.calls);
         await this.options.repo.ingestHeritage(codeParsed.heritage);
+        // ORM models declared in the file (Mongoose) are schema, not code.
+        const codeSchema = StorageParser.parseMongoSchema(relPath, content);
+        if (codeSchema.length > 0) {
+          await this.options.repo.deleteSchemaDefinitions(relPath);
+          for (const container of codeSchema) await this.options.repo.ingestStorageContainer(container);
+        }
         hasCodeUpdates = true;
         reindexed++;
         this.options.onUpdate?.('update_code', relPath);
@@ -238,6 +246,23 @@ export class CodeWatcher {
           this.tracer.line(`update ${relPath} in ${fmtMs(process.hrtime.bigint() - fileNs)} (doc)`);
         }
         continue;
+      }
+
+      // Schema / DDL edits. Only repository text reaches here — a database file is
+      // rejected by `decideIndexing` before content is read.
+      const schema = StorageParser.parseSchemaFile(relPath, content);
+      if (schema.entities.length > 0 || schema.containers.length > 0) {
+        await this.options.repo.deleteSchemaDefinitions(relPath);
+        for (const entity of schema.entities) await this.options.repo.ingestContractEntity(entity);
+        for (const container of schema.containers) await this.options.repo.ingestStorageContainer(container);
+        reindexed++;
+        this.options.onUpdate?.('update_schema', relPath);
+        if (tracing) {
+          this.tracer.line(
+            `update ${relPath} in ${fmtMs(process.hrtime.bigint() - fileNs)} ` +
+              `(schema: ${schema.entities.length} entity(ies), ${schema.containers.length} container(s))`
+          );
+        }
       }
     }
 

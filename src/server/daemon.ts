@@ -8,6 +8,7 @@ import { initGraphSchema } from '../db/schema.js';
 import { KnowCodeRepository } from '../db/client.js';
 import { CodeParser } from '../parser/code-parser.js';
 import { DocParser } from '../parser/doc-parser.js';
+import { StorageParser } from '../parser/storage-parser.js';
 import { LinkEngine } from '../parser/link-engine.js';
 import { CodeWatcher } from './watcher.js';
 import { Tracer, type TraceSink, fmtMs, nsToMs } from './trace.js';
@@ -20,6 +21,7 @@ import {
 import {
   INDEXABLE_GLOB,
   IGNORE_GLOBS,
+  SCHEMA_GLOB,
   DEFAULT_MAX_FILE_SIZE,
   decideIndexing,
 } from './indexable.js';
@@ -330,6 +332,8 @@ export class KnowCodeDaemon {
     filesIndexed: number;
     symbolsIndexed: number;
     docsIndexed: number;
+    /** Contract entities and storage containers ingested from repository schema files. */
+    schemaDefinitions?: number;
     timeMs: number;
   }> {
     if (this.isIndexing) {
@@ -353,6 +357,7 @@ export class KnowCodeDaemon {
       let docCount = 0;
       let totalSymbols = 0;
       let totalCalls = 0;
+      let schemaCount = 0;
       let parseNs = 0n;
 
       const allImports: any[] = [];
@@ -387,6 +392,10 @@ export class KnowCodeDaemon {
           allImports.push(...parsedCode.imports);
           allCalls.push(...parsedCode.calls);
           allHeritage.push(...parsedCode.heritage);
+          // ORM models declared in code — a Mongoose schema in a `.ts` model file is
+          // the most common "schema in source" there is — are collected here because
+          // a code file returns before the schema branch below.
+          schemaCount += await this.ingestCodeSchema(relPath, content);
           continue;
         }
 
@@ -397,6 +406,10 @@ export class KnowCodeDaemon {
           docCount++;
           continue;
         }
+
+        // Schema / DDL held in the repository. The live database is never read: only
+        // text files that are already in scope reach this point.
+        schemaCount += await this.ingestSchemaContent(relPath, content);
       }
       parseNs = process.hrtime.bigint() - parseStartNs;
 
@@ -425,6 +438,7 @@ export class KnowCodeDaemon {
         filesIndexed: codeCount + docCount,
         symbolsIndexed: totalSymbols,
         docsIndexed: docCount,
+        schemaDefinitions: schemaCount,
         timeMs: elapsed,
       };
     } finally {
@@ -433,11 +447,60 @@ export class KnowCodeDaemon {
   }
 
   /**
+   * Ingest schema and DDL definitions held in a repository file.
+   *
+   * The graph is populated only from text that a developer committed — migrations,
+   * `.proto` contracts, Prisma schemas, OpenAPI documents, Elasticsearch mappings.
+   * A running database is never queried, and its files are rejected before any read.
+   *
+   * @returns how many definitions were ingested.
+   */
+  /**
+   * Ingest schema definitions declared inside a source file.
+   *
+   * Only textual model declarations are read — a Mongoose schema, or any future ORM
+   * mapping. Nothing here opens or contacts a database.
+   */
+  private async ingestCodeSchema(relPath: string, content: string): Promise<number> {
+    const containers = StorageParser.parseMongoSchema(relPath, content);
+    if (containers.length === 0) return 0;
+
+    await this.repo!.deleteSchemaDefinitions(relPath);
+    for (const container of containers) {
+      await this.repo!.ingestStorageContainer(container);
+    }
+    this.log(`Schema ${relPath}: ${containers.length} ORM model(s).`);
+    return containers.length;
+  }
+
+  private async ingestSchemaContent(relPath: string, content: string): Promise<number> {
+    const { entities, containers } = StorageParser.parseSchemaFile(relPath, content);
+
+    // Replace this file's definitions: a model removed from the schema must not
+    // survive a re-index.
+    await this.repo!.deleteSchemaDefinitions(relPath);
+
+    for (const entity of entities) {
+      await this.repo!.ingestContractEntity(entity);
+    }
+    for (const container of containers) {
+      await this.repo!.ingestStorageContainer(container);
+    }
+
+    if (entities.length + containers.length > 0) {
+      this.log(
+        `Schema ${relPath}: ${entities.length} contract entity(ies), ${containers.length} storage container(s).`
+      );
+    }
+    return entities.length + containers.length;
+  }
+
+  /**
    * Discover indexable files. Shared by full indexing and the stale check so the
    * two always agree on exactly which files are in scope.
    */
   private async discoverFiles(rootDir: string): Promise<string[]> {
-    return await fg([STORAGE_FILE_PATTERN], {
+    return await fg([STORAGE_FILE_PATTERN, SCHEMA_GLOB], {
       cwd: rootDir,
       ignore: [...INDEX_IGNORE_GLOBS],
       dot: false,
@@ -558,6 +621,7 @@ export class KnowCodeDaemon {
     for (const relPath of deleted) {
       await this.repo.deleteFile(relPath);
       await this.repo.deleteDoc(relPath);
+      await this.repo.deleteSchemaDefinitions(relPath);
     }
 
     let updated = 0;
@@ -589,6 +653,7 @@ export class KnowCodeDaemon {
         allImports.push(...parsedCode.imports);
         allCalls.push(...parsedCode.calls);
         allHeritage.push(...parsedCode.heritage);
+        await this.ingestCodeSchema(relPath, content);
         sawCode = true;
         updated++;
         continue;
@@ -598,7 +663,10 @@ export class KnowCodeDaemon {
       if (parsedDoc) {
         await this.repo.ingestDocFile(parsedDoc);
         updated++;
+        continue;
       }
+
+      updated += (await this.ingestSchemaContent(relPath, content)) > 0 ? 1 : 0;
     }
 
     if (sawCode) {
