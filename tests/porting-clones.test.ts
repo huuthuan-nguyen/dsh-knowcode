@@ -56,6 +56,9 @@ test('Cross-Paradigm Blueprint, 3rd-Party Slice & Clone Hunter', async () => {
       hash: 'user-manager-hash',
       size: 1500,
       isTest: false,
+      // `const cache = CacheBuilder.newBuilder().build();` — the parser records this
+      // so calls on `cache` are still attributed to the library.
+      libraryAliases: ['cache|com.google.common.cache.Cache'],
       symbols: [
         {
           id: 'src/UserManager.java:IService',
@@ -93,12 +96,14 @@ test('Cross-Paradigm Blueprint, 3rd-Party Slice & Clone Hunter', async () => {
           file: 'src/UserManager.java',
           line: 15,
           calleeName: 'get',
+          calleeQName: 'cache.get',
         },
         {
           callerId: 'src/UserManager.java:UserManager',
           file: 'src/UserManager.java',
           line: 20,
           calleeName: 'put',
+          calleeQName: 'cache.put',
         },
       ],
       heritage: [
@@ -116,18 +121,22 @@ test('Cross-Paradigm Blueprint, 3rd-Party Slice & Clone Hunter', async () => {
         specifiers: ['Cache'],
       },
     ]);
+    // `cache` is the local bound from `CacheBuilder.newBuilder().build()`; the calls
+    // are `cache.get(...)` / `cache.put(...)`, which is how the parser records them.
     await repo.ingestCalls([
       {
         callerId: 'src/UserManager.java:UserManager',
         file: 'src/UserManager.java',
         line: 15,
         calleeName: 'get',
+        calleeQName: 'cache.get',
       },
       {
         callerId: 'src/UserManager.java:UserManager',
         file: 'src/UserManager.java',
         line: 20,
         calleeName: 'put',
+        calleeQName: 'cache.put',
       },
     ]);
     await repo.ingestHeritage([

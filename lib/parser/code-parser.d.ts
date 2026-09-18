@@ -49,6 +49,28 @@ export declare class CodeParser {
      */
     private static signatureFrom;
     /**
+     * Names of locals assigned from an expression that mentions an imported binding.
+     *
+     * `const cache = CacheBuilder.newBuilder().build()` followed by `cache.put(...)` is
+     * plainly library usage, but the receiver is `cache`, not the import. Without type
+     * inference this assignment is the only available signal, and without it a slice
+     * reported only the handful of calls made directly on the binding.
+     */
+    private static findLibraryAliases;
+    /**
+     * Gather a declaration header: the parameter list plus any wrapped return type,
+     * ending at the brace that opens the body.
+     *
+     * `gatherParens` stops at the parameter list's closing paren, so a return type
+     * that wraps onto following lines was lost entirely — every such signature was
+     * stored as `…): Promise<` with the type erased. The body brace is the first `{`
+     * seen at paren depth 0 **and** angle depth 0, which is what separates it from a
+     * `Promise<{ … }>` return type.
+     *
+     * @returns the joined header, and the index of its last line.
+     */
+    private static gatherHeader;
+    /**
      * Join a declaration's lines up to and including the line that closes its
      * parameter list.
      *
@@ -64,14 +86,6 @@ export declare class CodeParser {
      * @returns the joined declaration text (single-spaced, trimmed).
      */
     private static gatherParens;
-    /**
-     * Join a declaration's lines up to the line that opens its body, for
-     * declarations whose header (extends/implements clauses) may wrap.
-     *
-     * @returns the joined header, and the index of its last line so callers can
-     *   avoid counting that line's braces twice.
-     */
-    private static gatherToBrace;
     /**
      * Parse TypeScript / JavaScript files
      */

@@ -182,7 +182,8 @@ export class KnowCodeRepository {
         lineCount: $lineCount,
         size: $size,
         isTest: $isTest,
-        mtimeMs: $mtimeMs
+        mtimeMs: $mtimeMs,
+        libraryAliases: $libraryAliases
       })`,
       {
         params: {
@@ -193,6 +194,7 @@ export class KnowCodeRepository {
           size: parsed.size ?? 0,
           isTest: parsed.isTest ?? false,
           mtimeMs: parsed.mtimeMs ?? 0,
+          libraryAliases: (parsed.libraryAliases ?? []).join(','),
         },
       }
     );
@@ -309,13 +311,14 @@ export class KnowCodeRepository {
          MATCH (callee:Symbol)
          WHERE callee.name = $calleeName OR callee.qname = $calleeName
          MERGE (caller)-[r:CALLS]->(callee)
-         ON CREATE SET r.line = $line, r.count = 1, r.calleeName = $calleeName
+         ON CREATE SET r.line = $line, r.count = 1, r.calleeName = $calleeName, r.calleeQName = $calleeQName
          ON MATCH SET r.count = r.count + 1
          RETURN count(callee) AS matched`,
         {
           params: {
             callerId: call.callerId,
             calleeName: call.calleeName,
+            calleeQName: call.calleeQName ?? call.calleeName,
             line: call.line ?? 0,
           },
         }
@@ -329,12 +332,13 @@ export class KnowCodeRepository {
            WHERE caller.id = $callerId OR caller.name = $callerId
            MERGE (ext:ExternalSymbol {name: $calleeName})
            MERGE (caller)-[r:CALLS]->(ext)
-           ON CREATE SET r.line = $line, r.count = 1, r.calleeName = $calleeName
+           ON CREATE SET r.line = $line, r.count = 1, r.calleeName = $calleeName, r.calleeQName = $calleeQName
            ON MATCH SET r.count = r.count + 1`,
           {
             params: {
               callerId: call.callerId,
               calleeName: call.calleeName,
+              calleeQName: call.calleeQName ?? call.calleeName,
               line: call.line ?? 0,
             },
           }
@@ -349,12 +353,35 @@ export class KnowCodeRepository {
   public async ingestHeritage(heritage: ParsedCodeFile['heritage']): Promise<void> {
     for (const h of heritage) {
       const relType = h.kind === 'extends' ? 'EXTENDS' : 'IMPLEMENTS';
-      await this.graph.query(
+
+      // Point at the indexed supertype when there is one.
+      const resolved = await this.graph.query(
         `MATCH (sub:Symbol)
          WHERE sub.id = $subId OR sub.name = $subId
          MATCH (sup:Symbol)
          WHERE sup.name = $supName OR sup.qname = $supName
-         MERGE (sub)-[:${relType}]->(sup)`,
+         MERGE (sub)-[:${relType}]->(sup)
+         RETURN count(sup) AS linked`,
+        {
+          params: {
+            subId: h.subSymbolId,
+            supName: h.superSymbolName,
+          },
+        }
+      );
+
+      if (((resolved.data?.[0] as any)?.linked ?? 0) > 0) continue;
+
+      // The supertype is not in the workspace — a built-in such as `Error`, or a
+      // framework base class. The previous query simply matched nothing, so the
+      // relationship vanished and a class's inheritance was reported as empty.
+      // Record it against an `ExternalType` node instead, which keeps it visible
+      // without inventing a `Symbol` that would then pollute symbol counts.
+      await this.graph.query(
+        `MATCH (sub:Symbol)
+         WHERE sub.id = $subId OR sub.name = $subId
+         MERGE (ext:ExternalType { name: $supName })
+         MERGE (sub)-[:${relType}]->(ext)`,
         {
           params: {
             subId: h.subSymbolId,
@@ -407,7 +434,8 @@ export class KnowCodeRepository {
            content: $content,
            level: $level,
            startLine: $startLine,
-           endLine: $endLine
+           endLine: $endLine,
+           referencedSymbols: $referencedSymbols
          })
          CREATE (d)-[:HAS_SECTION]->(s)`,
         {
@@ -419,6 +447,8 @@ export class KnowCodeRepository {
             level: sec.level,
             startLine: sec.startLine,
             endLine: sec.endLine,
+            // Comma-delimited (and wrapped) so containment matches whole names only.
+            referencedSymbols: `,${(sec.referencedSymbols ?? []).join(',')},`,
           },
         }
       );
@@ -801,8 +831,29 @@ export class KnowCodeRepository {
     const sym = await this.getSymbolDefinition(symbolName);
     if (!sym) return null;
 
-    // Callees
+    // Callees. A class has no outgoing calls of its own — every call belongs to one
+    // of its methods — so asking for the class's callees returned nothing and the
+    // contract claimed "zero external callees, ideal for porting" for a class with
+    // hundreds of them. Aggregate the members' calls instead.
     const callees = await this.getCallees(symbolName);
+    let memberCallees = callees;
+    if (sym.kind === 'class' || sym.kind === 'interface') {
+      const memberCallsRes = await this.graph.query(
+        `MATCH (m:Symbol)-[r:CALLS]->(target)
+         WHERE m.qname STARTS WITH $prefix AND m.qname <> $self
+         RETURN target.name AS name, target.qname AS qname, target.file AS file,
+                target.kind AS kind, target.isExported AS isExported, count(r) AS callCount
+         ORDER BY callCount DESC`,
+        { params: { prefix: `${sym.name}.`, self: sym.qname } }
+      );
+      memberCallees = (memberCallsRes.data ?? []).map((r: any) => ({
+        calleeName: r.name,
+        calleeQName: r.qname ?? r.name,
+        calleeKind: r.kind,
+        file: r.file,
+        callCount: r.callCount,
+      }));
+    }
 
     // Types/members if it's a class or interface
     const membersRes = await this.graph.query(
@@ -838,6 +889,18 @@ export class KnowCodeRepository {
 
     const relatedTests = await this.getAffectedTests([sym.file]);
 
+    // Types the port target must also carry over. Previously hardcoded to `[]`, so
+    // a contract for a class that imports a dozen types claimed it needed none.
+    const importRes = await this.graph.query(
+      `MATCH (f:File {path: $file})-[:IMPORTS]->(target)
+       RETURN target.path AS path, f.path AS from
+       LIMIT 50`,
+      { params: { file: sym.file } }
+    );
+    const importedTypes = (importRes.data ?? [])
+      .map((r: any) => r.path)
+      .filter((p: unknown): p is string => typeof p === 'string' && p.length > 0);
+
     return {
       symbolName: sym.name,
       qname: sym.qname,
@@ -854,8 +917,8 @@ export class KnowCodeRepository {
       docstring: sym.docstring ?? '',
       exported: sym.isExported ?? false,
       dependencies: {
-        importedTypes: [],
-        callees: callees.map((c) => ({
+        importedTypes,
+        callees: memberCallees.map((c) => ({
           name: c.calleeName,
           qname: c.calleeQName,
           file: c.file,
@@ -1076,7 +1139,7 @@ export class KnowCodeRepository {
    */
   public async findSubtypesAndImplementations(symbolName: string): Promise<SubtypeResult[]> {
     const res = await this.graph.query(
-      `MATCH (sub:Symbol)-[r:EXTENDS|IMPLEMENTS]->(target:Symbol)
+      `MATCH (sub:Symbol)-[r:EXTENDS|IMPLEMENTS]->(target)
        WHERE target.name = $name OR target.qname = $name
        RETURN sub.name AS name, sub.qname AS qname, sub.kind AS kind, sub.file AS file,
               sub.startLine AS startLine, sub.signature AS signature, type(r) AS rel
@@ -1222,7 +1285,7 @@ export class KnowCodeRepository {
   ): Promise<CrossParadigmBlueprint> {
     const sym = await this.getSymbolDefinition(symbolName);
     const supertypes = await this.graph.query(
-      `MATCH (sub:Symbol)-[r:EXTENDS|IMPLEMENTS]->(sup:Symbol)
+      `MATCH (sub:Symbol)-[r:EXTENDS|IMPLEMENTS]->(sup)
        WHERE sub.name = $name OR sub.qname = $name
        RETURN sup.name AS name, sup.kind AS kind, type(r) AS rel`,
       { params: { name: symbolName } }
@@ -1265,6 +1328,12 @@ export class KnowCodeRepository {
       fields,
     });
 
+        // Appending `Error` blindly produced names like `DaemonAlreadyRunningErrorError`
+    // for any symbol that already ends in Error.
+    const errorEnumName = /Error$/.test(sym?.name ?? symbolName)
+      ? sym?.name ?? symbolName
+      : `${sym?.name ?? symbolName}Error`;
+
     // Convert super interfaces and abstract classes to traits / interfaces
     for (const sup of supRows) {
       traits.push({
@@ -1272,15 +1341,17 @@ export class KnowCodeRepository {
         methods: [
           {
             name: `execute_${sup.name.toLowerCase()}`,
-            signature: `fn execute_${sup.name.toLowerCase()}(&self) -> Result<(), ${sym?.name ?? symbolName}Error>`,
+            signature: `fn execute_${sup.name.toLowerCase()}(&self) -> Result<(), ${errorEnumName}>`,
             isMut: false,
           },
         ],
       });
     }
 
+    // Variants are a starting point, not an analysis of this symbol; say so rather
+    // than presenting two invented variants as if they were derived from the code.
     errorEnums.push({
-      name: `${sym?.name ?? symbolName}Error`,
+      name: errorEnumName,
       variants: ['NotFound', 'InvalidInput(String)', 'Internal(String)'],
     });
 
@@ -1291,23 +1362,25 @@ export class KnowCodeRepository {
       ownershipGuidelines.push(
         'FLATTEN INHERITANCE: Rust has no class inheritance. Convert all base classes to Traits and compose fields into a single struct.',
         'OWNERSHIP & BORROWING: Avoid cyclic references between parent and child objects. Use ID-based referencing (e.g. `u32` or `Uuid`) instead of bidirectional `Rc<RefCell<T>>`.',
-        'ERROR HANDLING: Replace runtime exceptions (`throw new Exception`) with idiomatic `Result<T, ' + (sym?.name ?? symbolName) + 'Error>`.',
-        'CONCURRENCY: If instances are shared across threads, wrap with `Arc<RwLock<T>>` or `Arc<Mutex<T>>` instead of Java `synchronized`.'
+        'ERROR HANDLING: Replace runtime exceptions (`throw new Exception`) with idiomatic `Result<T, ' + errorEnumName + '>`.',
+        'CONCURRENCY: If instances are shared across threads, wrap with `Arc<RwLock<T>>` or `Arc<Mutex<T>>` instead of a shared mutable reference.'
       );
       idiomaticSkeleton =
         `// Idiomatic Rust Blueprint for ${structName}\n` +
-        `#[derive(Debug, Clone, Default)]\n` +
+        `#[derive(Debug, Clone${fields.length === 0 ? ', Default' : ''})]\n` +
         `pub struct ${structName} {\n` +
         fields.map((f) => `    pub ${f.name}: ${f.type},\n`).join('') +
         `}\n\n` +
         `#[derive(Debug, thiserror::Error)]\n` +
-        `pub enum ${structName}Error {\n` +
+        `pub enum ${errorEnumName} {\n` +
         `    #[error("Resource not found")]\n    NotFound,\n` +
         `    #[error("Invalid argument: {0}")]\n    InvalidInput(String),\n` +
         `}\n\n` +
         `impl ${structName} {\n` +
-        `    pub fn new() -> Self {\n        Self::default()\n    }\n` +
-        methods.map((m) => `    pub fn ${m.name}(&${m.isMut ? 'mut ' : ''}self) -> Result<(), ${structName}Error> {\n        todo!()\n    }\n`).join('') +
+        (fields.length === 0
+          ? `    pub fn new() -> Self {\n        Self::default()\n    }\n`
+          : `    // Construct with the fields above; there is no meaningful Default.\n`) +
+        methods.map((m) => `    pub fn ${m.name}(&${m.isMut ? 'mut ' : ''}self) -> Result<(), ${errorEnumName}> {\n        todo!()\n    }\n`).join('') +
         `}\n`;
     } else if (targetLanguage === 'go') {
       ownershipGuidelines.push(
@@ -1396,25 +1469,77 @@ export class KnowCodeRepository {
       }
     }
 
+    // Bindings each file imports from the library, so a call can be attributed to it.
+    const bindingsByFile = new Map<string, Set<string>>();
+    for (const row of (importRes.data ?? []) as any[]) {
+      const set = bindingsByFile.get(row.filePath) ?? new Set<string>();
+      // Only the specifiers this file actually imported from this library.
+      for (const spec of String(row.specifiers ?? '').split(',')) {
+        const name = spec.trim();
+        if (name && name !== '*') set.add(name);
+      }
+      bindingsByFile.set(row.filePath, set);
+    }
+
+    // Locals assigned from an imported binding, recorded per file at index time.
+    const aliasesByFile = new Map<string, Set<string>>();
+    const aliasRes = await this.graph.query(
+      `MATCH (f:File) WHERE f.libraryAliases IS NOT NULL AND f.libraryAliases <> ''
+       RETURN f.path AS path, f.libraryAliases AS aliases`,
+      {}
+    );
+    const matchesLibrary = (modulePath: string): boolean =>
+      modulePath === libraryPrefix ||
+      modulePath.includes(libraryPrefix) ||
+      libraryPrefix.includes(modulePath);
+
+    for (const row of (aliasRes.data ?? []) as any[]) {
+      const set = new Set<string>();
+      for (const entry of String(row.aliases).split(',')) {
+        const [alias, modulePath] = entry.split('|');
+        if (!alias || !modulePath) continue;
+        if (matchesLibrary(modulePath.trim())) set.add(alias.trim());
+      }
+      if (set.size > 0) aliasesByFile.set(row.path, set);
+    }
+
+    // Only calls made *on* one of those bindings count. The previous query returned
+    // every call made anywhere in a file that imports the library, which is how a
+    // slice of `falkordb` came back with 71 "methods" consisting of `map`, `join`,
+    // `Set`, `setTimeout` and this project's own helpers.
     const callsRes = await this.graph.query(
       `MATCH (caller:Symbol)-[r:CALLS]->(callee)
-       MATCH (f:File {path: caller.file})-[:IMPORTS]->(pkg)
-       WHERE pkg.path CONTAINS $prefix OR r.calleeName CONTAINS $prefix
-       RETURN r.calleeName AS name, callee.name AS qname, caller.file AS callerFile, r.line AS line`,
-      { params: { prefix: libraryPrefix } }
+       WHERE caller.file IN $files
+       RETURN r.calleeName AS name, r.calleeQName AS qname, caller.file AS callerFile, r.line AS line`,
+      { params: { files: Array.from(fileSet) } }
     );
 
     const methodMap = new Map<string, { qname: string; callCount: number; files: Set<string>; exampleLine: number }>();
     for (const row of (callsRes.data ?? []) as any[]) {
       const name = row.name ?? 'unknown';
+      const callerFile = row.callerFile ?? '';
+      const bindings = bindingsByFile.get(callerFile);
+      if (!bindings) continue;
+
+      const qname = String(row.qname ?? name);
+      const receiver = qname.includes('.') ? qname.slice(0, qname.indexOf('.')) : '';
+
+      // `new FalkorDB(...)`, `createClient(...)`, `falkordb.createClient(...)`, or a
+      // call on a local assigned from one of those — `cache.put(...)` where
+      // `cache` came from `CacheBuilder.newBuilder().build()`.
+      const onBinding =
+        bindings.has(name) ||
+        (receiver.length > 0 && (bindings.has(receiver) || aliasesByFile.get(callerFile)?.has(receiver) === true));
+      if (!onBinding) continue;
+
       const existing = methodMap.get(name) ?? {
-        qname: row.qname ?? name,
+        qname,
         callCount: 0,
         files: new Set<string>(),
         exampleLine: row.line ?? 0,
       };
       existing.callCount++;
-      if (row.callerFile) existing.files.add(row.callerFile);
+      if (callerFile) existing.files.add(callerFile);
       methodMap.set(name, existing);
     }
 
@@ -1442,6 +1567,8 @@ export class KnowCodeRepository {
 
     const minimalTypes = [`Slim${libraryPrefix.replace(/[^a-zA-Z0-9]/g, '')}Client`];
     const minimalFunctions = invokedMethods.map((m) => `fn ${m.name}(...)`);
+    // Rough cost of the surface that is actually observable: one accessor plus an
+    // error path per distinct entry point.
     const estimatedLinesToImplement = Math.max(30, invokedMethods.length * 20);
 
     // Look up target ecosystem recommended package

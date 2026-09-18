@@ -634,6 +634,189 @@ test('database and binary files are never read or indexed', () => {
   assert.strictEqual(isIndexablePath('node_modules/x/index.js'), false);
 });
 
+test('multi-line return types survive into the stored signature', () => {
+  // `gatherParens` stopped at the parameter list's closing paren, so a return type
+  // that wrapped onto following lines was erased: every such signature was stored
+  // as `…): Promise<` and the porting contract lost the real contract.
+  const parsed = CodeParser.parseFile(
+    'src/api.ts',
+    [
+      'export class Repo {', // 1
+      '  public async explore(limit: number = 25): Promise<{', // 2
+      '    files: Array<{ path: string }>;', // 3
+      '    total: number;', // 4
+      '  }> {', // 5
+      '    return { files: [], total: 0 };', // 6
+      '  }', // 7
+      '  async search(q: string): Promise<', // 8
+      '    Array<{ title: string }>', // 9
+      '  > {', // 10
+      '    return [];', // 11
+      '  }', // 12
+      '}', // 13
+    ].join('\n')
+  )!;
+
+  const explore = parsed.symbols.find((s) => s.name === 'explore')!;
+  assert.match(explore.signature, /Promise<\{ files: Array<\{ path: string \}>; total: number; \}>/);
+  assert.strictEqual(explore.endLine, 7, 'the body must still end at its own brace');
+
+  const search = parsed.symbols.find((s) => s.name === 'search')!;
+  assert.match(search.signature, /Promise< Array<\{ title: string \}> >/);
+  assert.strictEqual(search.endLine, 12);
+});
+
+test('comments are not mined for calls', () => {
+  // Call extraction ran over the line with strings stripped but comments intact, so
+  // a note reading "Comma-delimited (and wrapped)…" produced a call to `delimited`
+  // and every dependency list collected stray words from prose.
+  const parsed = CodeParser.parseFile(
+    'src/a.ts',
+    [
+      '// Comma-delimited (and wrapped) so containment matches whole names only.',
+      '/* By naming convention (entryPoints) and referencedSymbols */',
+      'export function real(a: number) {',
+      '  return helper(a);',
+      '}',
+    ].join('\n')
+  )!;
+
+  const names = parsed.calls.map((c) => c.calleeName);
+  for (const word of ['delimited', 'convention', 'entryPoints', 'referencedSymbols']) {
+    assert.ok(!names.includes(word), `"${word}" from a comment must not be a call`);
+  }
+  assert.ok(names.includes('helper'), 'a real call must survive');
+});
+
+test('imports written inside a template literal are not extracted', () => {
+  // Test fixtures hold sample source in template literals. Declarations were already
+  // skipped there, but import matching still used the raw line, so fixtures produced
+  // imports of `./base` and `./logger` that then became external packages.
+  const parsed = CodeParser.parseFile(
+    'tests/fixture.test.ts',
+    [
+      'import { real } from "./real";',
+      'const fixture = `',
+      "import { BaseService } from './base';",
+      '`;',
+      'export function useIt() { return real(); }',
+    ].join('\n')
+  )!;
+
+  assert.deepStrictEqual(parsed.imports.map((i) => i.importedPath), ['./real']);
+});
+
+test('locals assigned from a library binding are recorded as aliases', () => {
+  // `const cache = CacheBuilder.newBuilder().build()` then `cache.put(...)` is
+  // library usage, but the receiver is `cache`. Without this signal a usage slice
+  // could only see calls made directly on the imported binding.
+  const parsed = CodeParser.parseFile(
+    'src/a.ts',
+    [
+      "import { CacheBuilder } from 'guava';",
+      "const cache = CacheBuilder.newBuilder().build();",
+      'export function use() { return cache.get(1); }',
+    ].join('\n')
+  )!;
+
+  assert.deepStrictEqual(parsed.libraryAliases, ['cache|guava']);
+});
+
+test('heritage to a supertype outside the workspace is still recorded', async () => {
+  // `class X extends Error` produced no edge at all, because the ingestion query
+  // required an indexed `:Symbol` for the supertype and simply matched nothing.
+  writeWs(GRAPH_WS, { 'src/e.ts': 'export class MyError extends Error {}\n' });
+
+  const port = 48610;
+  const daemon = new KnowCodeDaemon({ workdir: GRAPH_WS, port });
+
+  try {
+    await daemon.start();
+    await daemon.performFullIndex();
+    const client = new KnowCodeRpcClient({ workdir: GRAPH_WS, port });
+
+    const rows = await client.query(
+      'MATCH (c:Symbol)-[r:EXTENDS]->(p) RETURN c.name AS child, p.name AS parent, labels(p) AS labels'
+    );
+    const edge = (rows.data as any[]).find((r) => r.child === 'MyError');
+    assert.ok(edge, 'extends Error must be recorded, not silently dropped');
+    assert.strictEqual(edge.parent, 'Error');
+    assert.deepStrictEqual(edge.labels, ['ExternalType']);
+  } finally {
+    await daemon.stop();
+    clean([GRAPH_WS]);
+  }
+});
+
+test('a usage slice counts only calls made on the library', async () => {
+  // The slice returned every call made anywhere in a file that imports the library,
+  // so `falkordb` reported 71 "methods" including `map`, `join`, `Set` and this
+  // project's own helpers.
+  writeWs(GRAPH_WS, { 'src/uses.ts': '// placeholder\n' });
+
+  const port = 48620;
+  const daemon = new KnowCodeDaemon({ workdir: GRAPH_WS, port });
+
+  try {
+    await daemon.start();
+    await daemon.performFullIndex();
+    const repo = (daemon as any).repo as KnowCodeRepository;
+
+    await repo.ingestCodeFile({
+      path: 'src/uses.ts',
+      language: 'typescript',
+      lineCount: 10,
+      hash: 'h',
+      size: 100,
+      isTest: false,
+      libraryAliases: ['client|mylib'],
+      symbols: [
+        {
+          id: 'src/uses.ts:run',
+          name: 'run',
+          qname: 'run',
+          kind: 'function',
+          file: 'src/uses.ts',
+          startLine: 1,
+          endLine: 10,
+          signature: 'function run()',
+          isExported: true,
+        },
+      ],
+      calls: [],
+      imports: [],
+      heritage: [],
+    });
+    await repo.ingestImports([
+      {
+        sourceFile: 'src/uses.ts',
+        importedPath: 'mylib',
+        specifiers: ['createClient'],
+        resolvedCandidates: [],
+      },
+    ]);
+    await repo.ingestCalls([
+      // On the library, through the imported binding.
+      { callerId: 'src/uses.ts:run', file: 'src/uses.ts', line: 2, calleeName: 'createClient', calleeQName: 'createClient' },
+      // On a local derived from the library.
+      { callerId: 'src/uses.ts:run', file: 'src/uses.ts', line: 3, calleeName: 'fetch', calleeQName: 'client.fetch' },
+      // Nothing to do with the library.
+      { callerId: 'src/uses.ts:run', file: 'src/uses.ts', line: 4, calleeName: 'map', calleeQName: 'items.map' },
+      { callerId: 'src/uses.ts:run', file: 'src/uses.ts', line: 5, calleeName: 'localHelper', calleeQName: 'localHelper' },
+    ]);
+
+    const slice = await repo.extractThirdPartyUsageSlice('mylib', 'rust');
+    assert.deepStrictEqual(
+      slice.invokedMethods.map((m) => m.name).sort(),
+      ['createClient', 'fetch'],
+      'only calls on the library or its derived locals may be counted'
+    );
+  } finally {
+    await daemon.stop();
+    clean([GRAPH_WS]);
+  }
+});
+
 // ---------------------------------------------------------------------------
 // Single instance per workspace
 // ---------------------------------------------------------------------------

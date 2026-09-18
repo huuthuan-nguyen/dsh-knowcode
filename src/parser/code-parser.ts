@@ -169,6 +169,7 @@ export class CodeParser {
       calls,
       imports,
       heritage,
+      libraryAliases: CodeParser.findLibraryAliases(lines, imports),
     };
   }
 
@@ -191,20 +192,44 @@ export class CodeParser {
    */
   private static stripStringLiterals(
     line: string,
-    inTemplate: boolean
-  ): { code: string; inTemplate: boolean } {
+    inTemplate: boolean,
+    inBlockComment = false
+  ): { code: string; inTemplate: boolean; inBlockComment: boolean } {
     let code = '';
     let i = 0;
-    let mode: 'none' | 'single' | 'double' | 'template' = inTemplate ? 'template' : 'none';
+    let mode: 'none' | 'single' | 'double' | 'template' | 'block' = inBlockComment
+      ? 'block'
+      : inTemplate
+      ? 'template'
+      : 'none';
 
     while (i < line.length) {
       const ch = line[i];
 
       if (mode === 'none') {
+        // Comments are not code either: a `//` note reading "Comma-delimited (and
+        // wrapped)…" was extracted as a call to `delimited`, and similar prose gave
+        // every dependency list a sprinkling of words like `convention` and `points`.
+        if (ch === '/' && line[i + 1] === '/') break;
+        if (ch === '/' && line[i + 1] === '*') {
+          mode = 'block';
+          i += 2;
+          continue;
+        }
         if (ch === '"') mode = 'double';
         else if (ch === "'") mode = 'single';
         else if (ch === '`') mode = 'template';
         else code += ch;
+        i++;
+        continue;
+      }
+
+      if (mode === 'block') {
+        if (ch === '*' && line[i + 1] === '/') {
+          mode = 'none';
+          i += 2;
+          continue;
+        }
         i++;
         continue;
       }
@@ -224,8 +249,11 @@ export class CodeParser {
       i++;
     }
 
-    // Only template literals span lines; a lone quote ends with its line.
-    return { code, inTemplate: mode === 'template' };
+    return {
+      code,
+      inTemplate: mode === 'template',
+      inBlockComment: mode === 'block',
+    };
   }
 
   /**
@@ -291,6 +319,95 @@ export class CodeParser {
     const brace = text.lastIndexOf('{');
     return (brace >= 0 ? text.slice(0, brace) : text).trim();
   }
+  /**
+   * Names of locals assigned from an expression that mentions an imported binding.
+   *
+   * `const cache = CacheBuilder.newBuilder().build()` followed by `cache.put(...)` is
+   * plainly library usage, but the receiver is `cache`, not the import. Without type
+   * inference this assignment is the only available signal, and without it a slice
+   * reported only the handful of calls made directly on the binding.
+   */
+  private static findLibraryAliases(lines: string[], imports: FileImport[]): string[] {
+    const assignment = /(?:^|[^=!<>])\b([A-Za-z_$][\w$]*)\s*=(?!=)\s*([^;]*)/;
+    const entries: string[] = [];
+    const seen = new Set<string>();
+
+    // Per import: an alias must be attributed to the module it came from, or a slice
+    // for one library would accept locals derived from any other import in the file.
+    for (const imp of imports) {
+      const bindings = imp.specifiers.filter((spec) => spec && spec !== '*');
+      if (bindings.length === 0) continue;
+
+      const patterns = bindings.map((b) => new RegExp(`\\b${b}\\b`));
+
+      for (const raw of lines) {
+        const line = raw.trim();
+        if (line.startsWith('//') || line.startsWith('*') || line.startsWith('/*')) continue;
+
+        const match = line.match(assignment);
+        if (!match) continue;
+
+        const target = match[1];
+        const rhs = match[2];
+        if (bindings.includes(target)) continue;
+        if (!patterns.some((re) => re.test(rhs))) continue;
+
+        // `alias|module` — the module keeps the alias attributable to one library.
+        const key = `${target}|${imp.importedPath}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        entries.push(key);
+      }
+    }
+
+    return entries;
+  }
+
+  /**
+   * Gather a declaration header: the parameter list plus any wrapped return type,
+   * ending at the brace that opens the body.
+   *
+   * `gatherParens` stops at the parameter list's closing paren, so a return type
+   * that wraps onto following lines was lost entirely — every such signature was
+   * stored as `…): Promise<` with the type erased. The body brace is the first `{`
+   * seen at paren depth 0 **and** angle depth 0, which is what separates it from a
+   * `Promise<{ … }>` return type.
+   *
+   * @returns the joined header, and the index of its last line.
+   */
+  private static gatherHeader(
+    lines: string[],
+    startIdx: number,
+    maxLookahead = 40
+  ): { text: string; endIdx: number } {
+    const parts: string[] = [];
+    let paren = 0;
+    let angle = 0;
+    let endIdx = startIdx;
+
+    for (let i = startIdx; i < lines.length && i - startIdx <= maxLookahead; i++) {
+      const raw = lines[i] ?? '';
+      const code = raw.replace(/\/\/.*$/, '').replace(/\/\*[\s\S]*?\*\//g, '');
+
+      let bodyBrace = false;
+      for (const ch of code) {
+        if (ch === '(') paren++;
+        else if (ch === ')') paren = Math.max(0, paren - 1);
+        else if (ch === '<') angle++;
+        else if (ch === '>') angle = Math.max(0, angle - 1);
+        else if (ch === '{' && paren === 0 && angle === 0) bodyBrace = true;
+      }
+
+      parts.push(raw.trim());
+      endIdx = i;
+
+      // An arrow body, or the brace that opens the body.
+      if (bodyBrace) break;
+      if (paren === 0 && angle === 0 && /=>\s*$/.test(code)) break;
+    }
+
+    return { text: parts.join(' '), endIdx };
+  }
 
   /**
    * Join a declaration's lines up to and including the line that closes its
@@ -343,29 +460,6 @@ export class CodeParser {
   }
 
   /**
-   * Join a declaration's lines up to the line that opens its body, for
-   * declarations whose header (extends/implements clauses) may wrap.
-   *
-   * @returns the joined header, and the index of its last line so callers can
-   *   avoid counting that line's braces twice.
-   */
-  private static gatherToBrace(
-    lines: string[],
-    startIdx: number,
-    maxLookahead = 20
-  ): { text: string; endIdx: number } {
-    const parts: string[] = [];
-    let endIdx = startIdx;
-    for (let i = startIdx; i < lines.length && i - startIdx <= maxLookahead; i++) {
-      const raw = lines[i] ?? '';
-      parts.push(raw.trim());
-      endIdx = i;
-      if (raw.includes('{')) break;
-    }
-    return { text: parts.join(' '), endIdx };
-  }
-
-  /**
    * Parse TypeScript / JavaScript files
    */
   private static parseJsTs(
@@ -384,13 +478,17 @@ export class CodeParser {
     let inDoc = false;
     /** Tracks an open multi-line template literal across iterations. */
     let inTemplate = false;
+    /** Tracks an open block comment across iterations. */
+    let inBlockComment = false;
 
     for (let i = 0; i < lines.length; i++) {
       const lineNum = i + 1;
       const line = lines[i];
       const trimmed = line.trim();
-      const stripped = CodeParser.stripStringLiterals(line, inTemplate);
+      const wasInTemplate = inTemplate;
+      const stripped = CodeParser.stripStringLiterals(line, inTemplate, inBlockComment);
       inTemplate = stripped.inTemplate;
+      inBlockComment = stripped.inBlockComment;
       const codeOnly = stripped.code.trim();
 
       // Collect docstring
@@ -409,7 +507,11 @@ export class CodeParser {
       const docstring = currentDoc.length > 0 ? currentDoc.join('\n') : undefined;
 
       // Imports: import { a, b } from './foo';
-      const importMatch = trimmed.match(/^import\s+(?:type\s+)?(?:(\w+)|\{([^}]+)\}|\*\s+as\s+(\w+))\s+from\s+['"]([^'"]+)['"]/);
+      // The module path is itself a string literal, so the raw line is required —
+      // but a line inside a template literal is fixture text, not an import.
+      const importMatch = wasInTemplate
+        ? null
+        : trimmed.match(/^import\s+(?:type\s+)?(?:(\w+)|\{([^}]+)\}|\*\s+as\s+(\w+))\s+from\s+['"]([^'"]+)['"]/);
       if (importMatch) {
         const defaultImp = importMatch[1];
         const namedImps = importMatch[2];
@@ -439,7 +541,7 @@ export class CodeParser {
       // template literal (a test fixture holding sample code, or any generated
       // source string) is not indexed as if it were real. Heritage may wrap onto
       // following lines, so the details come from the joined header.
-      const classHeaderInfo = CodeParser.gatherToBrace(lines, i);
+      const classHeaderInfo = CodeParser.gatherHeader(lines, i);
       const classHeader = classHeaderInfo.text;
       const classGate = codeOnly.match(/^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(\w+)/);
       const classMatch = classGate
@@ -494,7 +596,7 @@ export class CodeParser {
       }
 
       // Interface: [export] interface Foo [extends Bar] — gated on stripped code.
-      const ifaceHeaderInfo = CodeParser.gatherToBrace(lines, i);
+      const ifaceHeaderInfo = CodeParser.gatherHeader(lines, i);
       const ifaceHeader = ifaceHeaderInfo.text;
       const ifaceMatch = codeOnly.match(/^(?:export\s+)?interface\s+(\w+)/)
         ? ifaceHeader.match(/^(?:export\s+)?interface\s+(\w+)(?:\s+extends\s+([\w\s,]+))?/)
@@ -564,7 +666,7 @@ export class CodeParser {
           const vis = (methodMatch[1] as any) ?? 'public';
           const name = methodMatch[2];
           const qname = `${currentClass}.${name}`;
-          const { text: signatureText } = CodeParser.gatherParens(lines, i);
+          const { text: signatureText } = CodeParser.gatherHeader(lines, i);
           symbols.push({
             id: `${file}:${qname}:${lineNum}`,
             name,
@@ -603,7 +705,7 @@ export class CodeParser {
       const fnMatch = codeOnly.match(/^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(/);
       if (fnMatch) {
         const name = fnMatch[1];
-        const { text: signatureText } = CodeParser.gatherParens(lines, i);
+        const { text: signatureText } = CodeParser.gatherHeader(lines, i);
         symbols.push({
           id: `${file}:${name}:${lineNum}`,
           name,
@@ -624,7 +726,7 @@ export class CodeParser {
       const arrowMatch = codeOnly.match(/^(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?\(/);
       if (arrowMatch) {
         const name = arrowMatch[1];
-        const { text: signatureText } = CodeParser.gatherParens(lines, i);
+        const { text: signatureText } = CodeParser.gatherHeader(lines, i);
         if (CodeParser.isArrowDeclaration(signatureText)) {
           symbols.push({
             id: `${file}:${name}:${lineNum}`,
@@ -687,13 +789,16 @@ export class CodeParser {
     let currentDoc: string[] = [];
     /** Tracks an open multi-line string literal across iterations. */
     let inTemplate = false;
+    let inBlockComment = false;
 
     for (let i = 0; i < lines.length; i++) {
       const lineNum = i + 1;
       const line = lines[i];
       const trimmed = line.trim();
-      const stripped = CodeParser.stripStringLiterals(line, inTemplate);
+      const wasInTemplate = inTemplate;
+      const stripped = CodeParser.stripStringLiterals(line, inTemplate, inBlockComment);
       inTemplate = stripped.inTemplate;
+      inBlockComment = stripped.inBlockComment;
       const codeOnly = stripped.code.trim();
 
       // Reset currentClass if an unindented, non-comment, non-empty statement appears
@@ -705,7 +810,7 @@ export class CodeParser {
       }
 
       // Imports: from foo import bar, baz OR import foo
-      const fromImport = trimmed.match(/^from\s+([.\w]+)\s+import\s+(.+)/);
+      const fromImport = wasInTemplate ? null : trimmed.match(/^from\s+([.\w]+)\s+import\s+(.+)/);
       if (fromImport) {
         const mod = fromImport[1];
         const specifiers = fromImport[2].split(',').map((s) => s.trim().split(/\s+as\s+/)[0]);
@@ -795,13 +900,16 @@ export class CodeParser {
         imports: FileImport[]
   ): void {
     let inTemplate = false;
+    let inBlockComment = false;
 
     for (let i = 0; i < lines.length; i++) {
       const lineNum = i + 1;
       const line = lines[i];
       const trimmed = line.trim();
-      const stripped = CodeParser.stripStringLiterals(line, inTemplate);
+      const wasInTemplate = inTemplate;
+      const stripped = CodeParser.stripStringLiterals(line, inTemplate, inBlockComment);
       inTemplate = stripped.inTemplate;
+      inBlockComment = stripped.inBlockComment;
       const codeOnly = stripped.code.trim();
 
       // Struct/Interface: type Foo struct/interface
@@ -829,7 +937,7 @@ export class CodeParser {
         const receiver = funcMatch[1];
         const name = funcMatch[2];
         const qname = receiver ? `${receiver}.${name}` : name;
-        const { text: signatureText } = CodeParser.gatherParens(lines, i);
+        const { text: signatureText } = CodeParser.gatherHeader(lines, i);
         symbols.push({
           id: `${file}:${qname}:${lineNum}`,
           name,
@@ -876,13 +984,16 @@ export class CodeParser {
   ): void {
     let currentImpl: string | null = null;
     let inTemplate = false;
+    let inBlockComment = false;
 
     for (let i = 0; i < lines.length; i++) {
       const lineNum = i + 1;
       const line = lines[i];
       const trimmed = line.trim();
-      const stripped = CodeParser.stripStringLiterals(line, inTemplate);
+      const wasInTemplate = inTemplate;
+      const stripped = CodeParser.stripStringLiterals(line, inTemplate, inBlockComment);
       inTemplate = stripped.inTemplate;
+      inBlockComment = stripped.inBlockComment;
       const codeOnly = stripped.code.trim();
 
       // struct or enum: [pub] struct/enum Foo
@@ -916,7 +1027,7 @@ export class CodeParser {
       if (fnMatch) {
         const name = fnMatch[1];
         const qname = currentImpl ? `${currentImpl}::${name}` : name;
-        const { text: signatureText } = CodeParser.gatherParens(lines, i);
+        const { text: signatureText } = CodeParser.gatherHeader(lines, i);
         symbols.push({
           id: `${file}:${qname}:${lineNum}`,
           name,
@@ -965,13 +1076,16 @@ export class CodeParser {
     calls: CodeCall[]
   ): void {
     let inTemplate = false;
+    let inBlockComment = false;
 
     for (let i = 0; i < lines.length; i++) {
       const lineNum = i + 1;
       const line = lines[i];
       const trimmed = line.trim();
-      const stripped = CodeParser.stripStringLiterals(line, inTemplate);
+      const wasInTemplate = inTemplate;
+      const stripped = CodeParser.stripStringLiterals(line, inTemplate, inBlockComment);
       inTemplate = stripped.inTemplate;
+      inBlockComment = stripped.inBlockComment;
       const codeOnly = stripped.code.trim();
 
       // Function/method pattern: returnType methodName(args) {
@@ -980,6 +1094,7 @@ export class CodeParser {
       );
       if (fnMatch && !NON_DECLARATION_KEYWORDS.has(fnMatch[1])) {
         const name = fnMatch[1];
+        const { text: genericSignature } = CodeParser.gatherHeader(lines, i);
         symbols.push({
           id: `${file}:${name}:${lineNum}`,
           name,
@@ -988,7 +1103,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: CodeParser.signatureFrom(trimmed),
+          signature: CodeParser.signatureFrom(genericSignature),
         });
       }
     }
@@ -1139,11 +1254,10 @@ export class CodeParser {
         // balanced braces closed the count immediately, so a 380-line function
         // was recorded as ending on its own signature line.
         //
-        // The body's opening brace is therefore located explicitly: the last `{`
-        // on the line that closes the parameter list (skipping a `{...}` return
-        // type that precedes it), or the first `{` on a nearby following line when
-        // the header ends without one.
-        const headerEndIdx = CodeParser.gatherParens(lines, startIdx).endIdx;
+        // The body brace is found by scanning the header with angle-bracket awareness:
+        // the last `{` on the header's final line, which skips a `Promise<{ … }>`
+        // return type that sits before it.
+        const headerEndIdx = CodeParser.gatherHeader(lines, startIdx).endIdx;
 
         let bodyLine = -1;
         let bodyCol = -1;
@@ -1152,15 +1266,6 @@ export class CodeParser {
         if (closesOnLine >= 0) {
           bodyLine = headerEndIdx;
           bodyCol = closesOnLine;
-        } else {
-          for (let i = headerEndIdx + 1; i < lines.length && i <= headerEndIdx + 3; i++) {
-            const col = (lines[i] ?? '').indexOf('{');
-            if (col >= 0) {
-              bodyLine = i;
-              bodyCol = col;
-              break;
-            }
-          }
         }
 
         if (bodyLine < 0) {

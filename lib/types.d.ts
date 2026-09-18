@@ -40,6 +40,13 @@ export interface FileImport {
     specifiers: string[];
 }
 export interface ParsedCodeFile {
+    /**
+     * Local variables whose initialiser references an imported binding, e.g.
+     * `const cache = CacheBuilder.newBuilder().build()`. Calls on such a variable are
+     * that library's API even though the receiver is not the import itself, and
+     * without type information this assignment is the only signal available.
+     */
+    libraryAliases?: string[];
     path: string;
     language: string;
     hash: string;
