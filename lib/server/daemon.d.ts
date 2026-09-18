@@ -20,6 +20,8 @@ export declare class KnowCodeDaemon {
     private isIndexing;
     private lastIndexedAt;
     private tracer;
+    /** Data directory of the running instance, for releasing the workspace guard. */
+    private dataDir;
     constructor(options: DaemonOptions);
     /** Expose the tracer so CLI callers can emit their own spans. */
     getTracer(): Tracer;

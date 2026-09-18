@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { KnowCodeDaemon } from '../server/daemon.js';
+import { DaemonAlreadyRunningError } from '../server/serve-lock.js';
 import { createTraceSink, isTraceEnabled } from './trace-flag.js';
 
 export async function runServeCommand(
@@ -19,7 +20,23 @@ export async function runServeCommand(
   });
 
   console.log(`[KnowCode] Starting daemon & file watcher in ${workdir}...`);
-  const info = await daemon.start();
+
+  let info: { port: number; pid: number };
+  try {
+    info = await daemon.start();
+  } catch (err: unknown) {
+    if (err instanceof DaemonAlreadyRunningError) {
+      // Not a failure: this workspace already has exactly one daemon, which is the
+      // invariant we want. Report it and exit without starting a second one.
+      const existing = err.existing;
+      console.log(
+        `[KnowCode] ${workdir} is already served by daemon pid ${existing?.pid ?? '?'}` +
+          `${existing?.port ? ` on port ${existing.port}` : ''}. Nothing to do.`
+      );
+      return;
+    }
+    throw err;
+  }
 
   console.log(`[KnowCode] Daemon online! (PID: ${info.pid}, Port: ${info.port})`);
 

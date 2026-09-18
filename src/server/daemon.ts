@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync } from 'node:fs';
+import { existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import fg from 'fast-glob';
@@ -12,6 +12,11 @@ import { LinkEngine } from '../parser/link-engine.js';
 import { CodeWatcher } from './watcher.js';
 import { Tracer, type TraceSink, fmtMs, nsToMs } from './trace.js';
 import { readMtimeMs } from './fs-mtime.js';
+import {
+  acquireServeLock,
+  releaseServeLock,
+  DaemonAlreadyRunningError,
+} from './serve-lock.js';
 import type { KnowCodeStats } from '../types.js';
 
 /** File globs considered indexable. Shared by indexing and the stale check. */
@@ -29,6 +34,29 @@ const INDEX_IGNORE_GLOBS = [
   '**/.next/**',
   '**/coverage/**',
 ];
+
+/**
+ * Delete leftover Redis background-save temp files.
+ *
+ * Redis writes `temp-<pid>.rdb` during a save and renames it on success, so an
+ * interrupted save leaves a file beside the real one that nothing ever removes —
+ * the workspace should hold exactly one `.rdb`.
+ */
+function removeStrayRdbTemps(dataDir: string): void {
+  try {
+    for (const entry of readdirSync(dataDir)) {
+      if (/^temp-.*\.rdb$/.test(entry)) {
+        try {
+          unlinkSync(join(dataDir, entry));
+        } catch {
+          /* in use or already gone */
+        }
+      }
+    }
+  } catch {
+    /* data directory unreadable: nothing to clean */
+  }
+}
 
 export interface DaemonOptions {
   workdir: string;
@@ -51,6 +79,8 @@ export class KnowCodeDaemon {
   private isIndexing: boolean = false;
   private lastIndexedAt: string | null = null;
   private tracer: Tracer;
+  /** Data directory of the running instance, for releasing the workspace guard. */
+  private dataDir: string | null = null;
 
   constructor(private options: DaemonOptions) {
     this.falkorManager = new FalkorDBManager();
@@ -155,8 +185,23 @@ export class KnowCodeDaemon {
 
     const requestedPort = this.options.port ?? 48123;
 
+    // One daemon per workspace. Two would each run a watcher and an embedded
+    // FalkorDB over the same `.rdb`, and the second would overwrite `daemon.json`
+    // so clients flip between them. Claimed before anything is started, with an
+    // exclusive create so simultaneous starts cannot both win.
+    const lock = acquireServeLock(dataDir, workdir, requestedPort);
+    if (!lock.acquired) {
+      throw new DaemonAlreadyRunningError(lock.existing ?? null, workdir);
+    }
+    this.dataDir = dataDir;
+
     this.log(`Starting FalkorDB embedded database in ${dataDir}...`);
     const openSpan = this.tracer.span(`db: embedded FalkorDB opened (dir=${dataDir})`);
+
+    // Leave exactly one database file behind: a background save interrupted by a
+    // kill leaves a `temp-*.rdb` beside the real one, and nothing ever removes it.
+    removeStrayRdbTemps(dataDir);
+
     this.falkorInstance = await this.falkorManager.start({
       dataDir,
       customUrl: this.options.falkordbUrl,
@@ -259,6 +304,12 @@ export class KnowCodeDaemon {
         unlinkSync(daemonInfoPath);
       } catch {}
     }
+
+    // Release the single-instance guard so this workspace can be served again.
+    // Only a guard still naming this process is removed, so a guard already
+    // reclaimed by another daemon is left alone.
+    releaseServeLock(this.dataDir ?? dataDir);
+    this.dataDir = null;
 
     this.log('KnowCode daemon stopped cleanly.');
   }

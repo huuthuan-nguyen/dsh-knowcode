@@ -16,6 +16,10 @@ import {
   __resetOwnedDaemonsForTest,
 } from '../lib/server/auto-start.js';
 import { apply } from '../lib/index.js';
+import {
+  readServeLock,
+  DaemonAlreadyRunningError,
+} from '../lib/server/serve-lock.js';
 
 const GRAPH_WS = resolve('/tmp/knowcode-graph-integrity');
 const IDENTITY_A = resolve('/tmp/knowcode-identity-a');
@@ -586,6 +590,75 @@ test('the plugin registers a disposal effect that stops owned daemons', () => {
 
   __resetOwnedDaemonsForTest();
   assert.doesNotThrow(() => effects[0](), 'disposal must not throw with nothing owned');
+});
+
+// ---------------------------------------------------------------------------
+// Single instance per workspace
+// ---------------------------------------------------------------------------
+
+test('only one daemon may serve a workspace at a time', async () => {
+  // Without this, a second `knowcode serve` for the same workspace falls back to
+  // another port and then overwrites daemon.json, leaving two HTTP servers, two
+  // watchers and two embedded FalkorDB processes over the same `.rdb`.
+  writeWs(GRAPH_WS, { 'src/math.ts': 'export function alpha() { return 1; }\n' });
+  const dataDir = join(GRAPH_WS, '.knowcode');
+
+  const first = new KnowCodeDaemon({ workdir: GRAPH_WS, port: 48560 });
+
+  try {
+    const firstInfo = await first.start({ withWatcher: false });
+
+    const lock = readServeLock(dataDir);
+    assert.ok(lock, 'the guard must be recorded');
+    assert.strictEqual(lock!.pid, firstInfo.pid);
+    assert.strictEqual(lock!.port, firstInfo.port);
+
+    // A second daemon for the same workspace must refuse to start.
+    const second = new KnowCodeDaemon({ workdir: GRAPH_WS, port: 48570 });
+    await assert.rejects(
+      () => second.start({ withWatcher: false }),
+      (err: any) => err instanceof DaemonAlreadyRunningError,
+      'a second daemon for one workspace must be refused'
+    );
+
+    // The refusal must not have disturbed the incumbent.
+    assert.strictEqual((await new KnowCodeRpcClient({ workdir: GRAPH_WS, port: firstInfo.port }).isDaemonAlive()), true);
+  } finally {
+    await first.stop();
+  }
+
+  // Stopping releases the guard so the workspace can be served again.
+  assert.strictEqual(readServeLock(dataDir), null, 'the guard must be released on stop');
+
+  const third = new KnowCodeDaemon({ workdir: GRAPH_WS, port: 48580 });
+  try {
+    const info = await third.start({ withWatcher: false });
+    assert.ok(info.port > 0, 'a workspace must be servable again after its daemon stops');
+  } finally {
+    await third.stop();
+    clean([GRAPH_WS]);
+  }
+});
+
+test('a guard left by a dead daemon is reclaimed', async () => {
+  // A crashed daemon must never block its workspace forever.
+  writeWs(GRAPH_WS, { 'src/math.ts': 'export function alpha() { return 1; }\n' });
+  const dataDir = join(GRAPH_WS, '.knowcode');
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(
+    join(dataDir, 'serve.lock'),
+    JSON.stringify({ pid: 999_999, port: 1, workdir: GRAPH_WS, startedAt: 'stale' })
+  );
+
+  const daemon = new KnowCodeDaemon({ workdir: GRAPH_WS, port: 48590 });
+  try {
+    const info = await daemon.start({ withWatcher: false });
+    assert.ok(info.port > 0, 'a stale guard must not block startup');
+    assert.strictEqual(readServeLock(dataDir)!.pid, info.pid, 'the guard must be replaced');
+  } finally {
+    await daemon.stop();
+    clean([GRAPH_WS]);
+  }
 });
 
 // ---------------------------------------------------------------------------

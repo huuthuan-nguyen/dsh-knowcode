@@ -518,6 +518,12 @@ dsh plugin add --profile web dsh-knowcode
 | `autoStartDaemon` | `true` | Start a daemon automatically when a tool runs in a workspace that has none, instead of replying with a "run `knowcode serve .`" notice. The daemon is spawned detached from this package's own CLI and its output is appended to `<dataDir>/serve.log`. Concurrent calls share one start attempt; the first call may wait a few hundred milliseconds. |
 | `stopDaemonOnExit` | `true` | Stop the daemons **this process** spawned when the harness exits. Detached daemons outlive a tool call, so without this, quitting DSH would leave one running per project — each holding an embedded FalkorDB process, an HTTP server, a file watcher and a database file. Cleanup runs from the plugin's disposal effect, which DSH triggers on `SIGINT` (Ctrl+C) and `SIGTERM`; `SIGKILL` bypasses disposal and is the one case that still orphans a daemon. Daemons you started yourself with `knowcode serve .` are never touched. |
 
+### One daemon per workspace
+
+Each workspace runs **exactly one** daemon at a time, guarded by a `serve.lock` claimed with an exclusive create before anything starts. A second `serve` for the same workspace exits with a notice instead of starting a rival — two would each run a watcher and an embedded FalkorDB over the same `.rdb`, and the second would overwrite `daemon.json` so clients flipped between them. A guard left behind by a crashed daemon is detected by pid and reclaimed, so a dead process never blocks a workspace.
+
+The consequence is one database file per workspace. On startup the daemon also removes any `temp-*.rdb` left by an interrupted background save, so a workspace holds exactly one `.rdb`.
+
 ---
 
 ## 🧯 Compatibility & Troubleshooting
@@ -619,7 +625,8 @@ Runs:
   scope does not leak
 - Daemon isolation: a second workspace falls back to a free port instead of dying
   with `EADDRINUSE`, a failed start never leaks the embedded FalkorDB process, a
-  client refuses a daemon that serves a different workspace, `autoStartDaemon`
+  client refuses a daemon that serves a different workspace, a second daemon for
+  one workspace is refused while a dead one's guard is reclaimed, `autoStartDaemon`
   brings a daemon up on demand, and shutdown stops only the daemons this process
   spawned so no `knowcode serve` is orphaned
 

@@ -192,8 +192,12 @@ async function runAutoStart(
     // A spawn failure surfaces asynchronously; record it and let the poll below
     // report the timeout so behaviour is identical either way.
     let spawnError: Error | null = null;
+    let childExited = false;
     child.once('error', (err) => {
       spawnError = err;
+    });
+    child.once('exit', () => {
+      childExited = true;
     });
     child.unref();
 
@@ -208,6 +212,15 @@ async function runAutoStart(
     while (Date.now() < deadline) {
       if (await client.isDaemonAlive()) return { started: true, spawned: true };
       if (spawnError) break;
+      // The CLI can exit immediately — most often because another daemon already
+      // holds the workspace guard. Waiting out the full budget would stall the tool
+      // call for nothing.
+      if (childExited) {
+        return {
+          started: false,
+          reason: 'the daemon exited immediately (another daemon may already serve this workspace)',
+        };
+      }
       await delay(pollIntervalMs);
     }
 
