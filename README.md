@@ -598,6 +598,12 @@ Runs:
 - Tool-output contract: every return branch of every action validated against
   `KNOWCODE_OUTPUT_SCHEMA` with the harness's own `validateJsonSchemaValue`, so an
   undeclared field can never reach the harness and fail with `INVALID_TOOL_OUTPUT`
+- Graph integrity: multi-line signatures are indexed, relative imports produce real
+  `:IMPORTS` edges (and therefore `TESTS_FOR` / affected-test links), declaration
+  `endLine` covers the whole body, and Python class scope does not leak
+- Daemon isolation: a second workspace falls back to a free port instead of dying
+  with `EADDRINUSE`, a failed start never leaks the embedded FalkorDB process, and
+  a client refuses a daemon that serves a different workspace
 
 ---
 

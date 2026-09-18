@@ -23,12 +23,26 @@ export declare class KnowCodeDaemon {
     constructor(options: DaemonOptions);
     /** Expose the tracer so CLI callers can emit their own spans. */
     getTracer(): Tracer;
+    /**
+     * Bind the HTTP server, falling back to the next free port when the requested
+     * one is already held.
+     *
+     * Every workspace requests port 48123 by default, so without this a second
+     * `knowcode serve` died with `EADDRINUSE`. The port that actually got bound is
+     * written to `<dataDir>/daemon.json`, which is how clients of each workspace
+     * find their own daemon.
+     *
+     * @param requestedPort - the preferred loopback port.
+     * @returns the port the server is actually listening on.
+     */
+    private listenOnAvailablePort;
     start(startOpts?: {
         withWatcher?: boolean;
     }): Promise<{
         port: number;
         pid: number;
     }>;
+    private startInner;
     stop(): Promise<void>;
     /**
      * Perform full indexing pass on the workspace

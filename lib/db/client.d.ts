@@ -22,6 +22,15 @@ export declare class KnowCodeRepository {
     /**
      * Ingest imports for a file
      */
+    /**
+     * Ingest file imports.
+     *
+     * A relative import is resolved by matching the parser's candidate list
+     * against the indexed `File` nodes. Matching a single extension-less guess
+     * (the previous behaviour) never hit a real `File.path`, so **no** `:IMPORTS`
+     * edge was ever created between local files — which silently broke
+     * `TESTS_FOR` linking and therefore affected-test discovery.
+     */
     ingestImports(imports: ParsedCodeFile['imports']): Promise<void>;
     /**
      * Ingest call relationships between symbols

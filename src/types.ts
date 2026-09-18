@@ -42,6 +42,16 @@ export interface FileImport {
   sourceFile: string;
   importedPath: string;
   resolvedFile?: string;
+  /**
+   * Every plausible project-relative path this import could resolve to
+   * (extension-less base, base + each known extension, base/index + extension).
+   *
+   * A parser has no filesystem access and no knowledge of which files exist, so
+   * it cannot pick the right one. Resolution happens at ingest time by matching
+   * these candidates against the indexed `File` nodes — matching only
+   * `resolvedFile` silently produced zero `:IMPORTS` edges.
+   */
+  resolvedCandidates?: string[];
   specifiers: string[]; // imported symbol names or '*'
 }
 
@@ -99,6 +109,11 @@ export interface KnowCodeStats {
   daemonRunning: boolean;
   daemonPid?: number;
   port?: number;
+  /**
+   * Absolute workspace this daemon serves. Clients compare it with their own
+   * workdir so a daemon belonging to another project can never answer for them.
+   */
+  workdir?: string;
   dbPath: string;
   totalFiles: number;
   totalCodeFiles: number;

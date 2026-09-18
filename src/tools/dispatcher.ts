@@ -393,11 +393,15 @@ export async function executeKnowCodeTool(
           content: `[KnowCode Error: Unknown action '${rawAction}']`,
         };
     }
-  } catch (err: any) {
+  } catch (err: unknown) {
+    // Never let the error path itself throw: a non-Error throw (a bare string,
+    // null, a rejected non-Error value) must still yield a usable tool result
+    // rather than escaping as an unhandled rejection.
+    const message = err instanceof Error ? err.message : typeof err === 'string' ? err : String(err);
     return {
       kind: 'knowcode',
       action: rawAction,
-      content: `[KnowCode Error: ${err.message}]`,
+      content: `[KnowCode Error: ${message}]`,
     };
   }
 }

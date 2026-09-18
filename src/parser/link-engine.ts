@@ -23,12 +23,14 @@ export class LinkEngine {
       RETURN count(*) AS cnt
     `);
 
-    // 2. Link via naming conventions: foo.test.ts -> foo.ts
+    // 2. Link via naming conventions: foo.test.ts -> foo.ts, test_foo.py -> foo.py
     const res2 = await this.repo.query(`
       MATCH (tf:File {isTest: true}), (sf:File {isTest: false})
       WHERE tf.path CONTAINS replace(sf.path, '.ts', '.test.ts')
          OR tf.path CONTAINS replace(sf.path, '.js', '.test.js')
          OR tf.path CONTAINS replace(sf.path, '.go', '_test.go')
+         OR tf.path CONTAINS replace(sf.path, '.py', '_test.py')
+         OR tf.path CONTAINS ('test_' + sf.path)
       MERGE (tf)-[:TESTS_FOR]->(sf)
       RETURN count(*) AS cnt
     `);
@@ -44,7 +46,7 @@ export class LinkEngine {
   public async linkDocsToSymbols(): Promise<number> {
     const res = await this.repo.query(`
       MATCH (sec:DocSection), (sym:Symbol)
-      WHERE sec.content CONTAINS sym.name
+      WHERE size(sym.name) >= 3 AND sec.content CONTAINS sym.name
       MERGE (sec)-[:DOCUMENTS]->(sym)
       RETURN count(*) AS cnt
     `);

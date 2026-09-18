@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { KnowCodeStats } from '../types.js';
 
 export interface RpcClientOptions {
@@ -31,18 +31,53 @@ export class KnowCodeRpcClient {
   }
 
   /**
-   * Check if daemon is active and responding
+   * Check whether a daemon serving *this* workspace is active.
+   *
+   * Every workspace defaults to the same port, and a workspace that has never run
+   * `knowcode serve` has no `daemon.json` to read a port from. Without an identity
+   * check such a call would happily reach another project's daemon and return that
+   * project's graph. The `/status` payload carries the daemon's workspace, so a
+   * mismatch is rejected here.
    */
   public async isDaemonAlive(): Promise<boolean> {
+    const status = await this.tryGetStatus(1000);
+    if (status === null) return false;
+    return this.belongsToThisWorkspace(status);
+  }
+
+  /** Fetch `/status`, or null when nothing usable answered. */
+  private async tryGetStatus(timeoutMs: number): Promise<KnowCodeStats | null> {
     const port = this.getActivePort();
     try {
       const res = await fetch(`http://127.0.0.1:${port}/status`, {
-        signal: AbortSignal.timeout(1000),
+        signal: AbortSignal.timeout(timeoutMs),
       });
-      return res.ok;
+      if (!res.ok) return null;
+      return (await res.json()) as KnowCodeStats;
     } catch {
-      return false;
+      return null;
     }
+  }
+
+  /**
+   * Whether a status payload came from a daemon for this workspace.
+   *
+   * Daemons predating the `workdir` field report `undefined`; those are accepted
+   * only when the port came from this workspace's own `daemon.json`, so a
+   * default-port guess is still rejected.
+   */
+  private belongsToThisWorkspace(status: KnowCodeStats): boolean {
+    const expected = resolve(this.options.workdir);
+    if (typeof status.workdir === 'string' && status.workdir.length > 0) {
+      return resolve(status.workdir) === expected;
+    }
+    return this.hasOwnDaemonFile();
+  }
+
+  /** Whether this workspace records its own daemon port. */
+  private hasOwnDaemonFile(): boolean {
+    const dataDir = join(this.options.workdir, this.options.dataDir ?? '.knowcode');
+    return existsSync(join(dataDir, 'daemon.json'));
   }
 
   /**
@@ -50,11 +85,17 @@ export class KnowCodeRpcClient {
    */
   public async getStatus(): Promise<KnowCodeStats> {
     const port = this.getActivePort();
-    const res = await fetch(`http://127.0.0.1:${port}/status`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (!res.ok) throw new Error(`Failed to fetch status: ${res.statusText}`);
-    return (await res.json()) as KnowCodeStats;
+    const status = await this.tryGetStatus(5000);
+    if (status === null) {
+      throw new Error(`Failed to fetch status from port ${port}`);
+    }
+    if (!this.belongsToThisWorkspace(status)) {
+      throw new Error(
+        `The daemon on port ${port} serves ${status.workdir ?? 'another workspace'}, not ` +
+          `${resolve(this.options.workdir)}. Run \`knowcode serve .\` in this workspace.`
+      );
+    }
+    return status;
   }
 
   /**

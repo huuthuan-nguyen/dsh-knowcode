@@ -13,9 +13,27 @@ export declare class KnowCodeRpcClient {
      */
     getActivePort(): number;
     /**
-     * Check if daemon is active and responding
+     * Check whether a daemon serving *this* workspace is active.
+     *
+     * Every workspace defaults to the same port, and a workspace that has never run
+     * `knowcode serve` has no `daemon.json` to read a port from. Without an identity
+     * check such a call would happily reach another project's daemon and return that
+     * project's graph. The `/status` payload carries the daemon's workspace, so a
+     * mismatch is rejected here.
      */
     isDaemonAlive(): Promise<boolean>;
+    /** Fetch `/status`, or null when nothing usable answered. */
+    private tryGetStatus;
+    /**
+     * Whether a status payload came from a daemon for this workspace.
+     *
+     * Daemons predating the `workdir` field report `undefined`; those are accepted
+     * only when the port came from this workspace's own `daemon.json`, so a
+     * default-port guess is still rejected.
+     */
+    private belongsToThisWorkspace;
+    /** Whether this workspace records its own daemon port. */
+    private hasOwnDaemonFile;
     /**
      * Get stats from daemon
      */

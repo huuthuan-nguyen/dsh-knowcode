@@ -185,24 +185,48 @@ export class KnowCodeRepository {
   /**
    * Ingest imports for a file
    */
+  /**
+   * Ingest file imports.
+   *
+   * A relative import is resolved by matching the parser's candidate list
+   * against the indexed `File` nodes. Matching a single extension-less guess
+   * (the previous behaviour) never hit a real `File.path`, so **no** `:IMPORTS`
+   * edge was ever created between local files — which silently broke
+   * `TESTS_FOR` linking and therefore affected-test discovery.
+   */
   public async ingestImports(imports: ParsedCodeFile['imports']): Promise<void> {
     for (const imp of imports) {
-      if (imp.resolvedFile) {
-        await this.graph.query(
-          `MATCH (src:File {path: $srcPath}), (dst:File {path: $dstPath})
+      const candidates =
+        imp.resolvedCandidates && imp.resolvedCandidates.length > 0
+          ? imp.resolvedCandidates
+          : imp.resolvedFile
+          ? [imp.resolvedFile]
+          : [];
+
+      let linked = false;
+
+      if (candidates.length > 0) {
+        const res = await this.graph.query(
+          `MATCH (src:File {path: $srcPath})
+           MATCH (dst:File)
+           WHERE dst.path IN $candidates
            MERGE (src)-[r:IMPORTS]->(dst)
-           SET r.specifiers = $specifiers, r.importedPath = $importedPath`,
+           SET r.specifiers = $specifiers, r.importedPath = $importedPath
+           RETURN count(dst) AS linked`,
           {
             params: {
               srcPath: imp.sourceFile,
-              dstPath: imp.resolvedFile,
+              candidates,
               specifiers: imp.specifiers.join(','),
               importedPath: imp.importedPath,
             },
           }
         );
-      } else {
-        // External 3rd-party library import
+        linked = ((res.data?.[0] as any)?.linked ?? 0) > 0;
+      }
+
+      if (!linked) {
+        // Not a local file: record the import against an external package node.
         await this.graph.query(
           `MATCH (src:File {path: $srcPath})
            MERGE (pkg:ExternalPackage {path: $importedPath})
@@ -432,7 +456,7 @@ export class KnowCodeRepository {
    */
   public async getSymbolDefinition(name: string, file?: string): Promise<CodeSymbol | null> {
     const cypher = file
-      ? `MATCH (s:Symbol {name: $name, file: $file}) RETURN s LIMIT 1`
+      ? `MATCH (s:Symbol) WHERE (s.name = $name OR s.qname = $name) AND s.file = $file RETURN s LIMIT 1`
       : `MATCH (s:Symbol) WHERE s.name = $name OR s.qname = $name RETURN s LIMIT 1`;
 
     const res = await this.graph.query(cypher, { params: { name, file: file ?? '' } });
@@ -569,9 +593,11 @@ export class KnowCodeRepository {
     const targetSym = await this.getSymbolDefinition(symbolName);
     const targetFile = targetSym?.file ?? 'unknown';
 
-    // Cypher path traversal up to maxDepth
+    const safeDepth = Math.min(Math.max(1, Math.floor(Number(maxDepth)) || 3), 10);
+
+    // Cypher path traversal up to safeDepth
     const query = `
-      MATCH path = (caller:Symbol)-[:CALLS*1..${maxDepth}]->(target:Symbol)
+      MATCH path = (caller:Symbol)-[:CALLS*1..${safeDepth}]->(target:Symbol)
       WHERE target.name = $symbolName OR target.qname = $symbolName
       RETURN length(path) AS depth,
              caller.name AS callerName,
@@ -1545,9 +1571,11 @@ export class KnowCodeRepository {
         depth: 0,
       });
 
+      const safeDepth = Math.min(Math.max(1, Math.floor(Number(depth)) || 3), 10);
+
       // Query downstream call paths
       const pathRes = await this.graph.query(
-        `MATCH path = (entry:Symbol)-[:CALLS*1..${depth}]->(downstream:Symbol)
+        `MATCH path = (entry:Symbol)-[:CALLS*1..${safeDepth}]->(downstream:Symbol)
          WHERE entry.name = $name OR entry.qname = $name
          RETURN length(path) AS hop,
                 [n in nodes(path) | { name: n.name, qname: n.qname, kind: n.kind, file: n.file, line: n.startLine }] AS pathNodes
@@ -1581,13 +1609,17 @@ export class KnowCodeRepository {
     }
 
     // Generate Mermaid graph
+    const sanitizeNodeId = (id: string) => id.replace(/[^a-zA-Z0-9_]/g, '_');
     let mermaidDiagram = 'graph TD\n';
     if (mermaidEdges.length === 0 && entrySymbols.length > 0) {
-      mermaidDiagram += `  ${entrySymbols[0].name}["${entrySymbols[0].name} (Entry)"]\n`;
+      const eId = sanitizeNodeId(entrySymbols[0].name);
+      mermaidDiagram += `  ${eId}["${entrySymbols[0].name} (Entry)"]\n`;
     } else {
       const uniqueEdges = new Set<string>();
       for (const e of mermaidEdges) {
-        const edgeStr = `  ${e.from} --> ${e.to}`;
+        const fromId = sanitizeNodeId(e.from);
+        const toId = sanitizeNodeId(e.to);
+        const edgeStr = `  ${fromId} --> ${toId}`;
         if (!uniqueEdges.has(edgeStr)) {
           uniqueEdges.add(edgeStr);
           mermaidDiagram += `${edgeStr}\n`;

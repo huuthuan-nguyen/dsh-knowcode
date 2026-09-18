@@ -14,8 +14,9 @@ export async function runQueryCommand(cypher: string, targetDir: string = '.', o
   try {
     const res = await client.query(cypher);
     console.log(JSON.stringify(res.data, null, 2));
-  } catch (err: any) {
-    console.error(`[KnowCode Query Error]: ${err.message}`);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.error(`[KnowCode Query Error]: ${message}`);
     process.exit(1);
   }
 }

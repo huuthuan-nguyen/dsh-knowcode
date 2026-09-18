@@ -73,7 +73,72 @@ export class KnowCodeDaemon {
     return this.tracer;
   }
 
+  /**
+   * Bind the HTTP server, falling back to the next free port when the requested
+   * one is already held.
+   *
+   * Every workspace requests port 48123 by default, so without this a second
+   * `knowcode serve` died with `EADDRINUSE`. The port that actually got bound is
+   * written to `<dataDir>/daemon.json`, which is how clients of each workspace
+   * find their own daemon.
+   *
+   * @param requestedPort - the preferred loopback port.
+   * @returns the port the server is actually listening on.
+   */
+  private async listenOnAvailablePort(requestedPort: number): Promise<number> {
+    const listen = (port: number): Promise<void> =>
+      new Promise<void>((resolvePromise, rejectPromise) => {
+        const server = http.createServer(async (req, res) => {
+          try {
+            await this.handleRequest(req, res);
+          } catch (err: any) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: err?.message ?? String(err) }));
+          }
+        });
+        const onError = (err: NodeJS.ErrnoException) => {
+          server.removeListener('listening', onListening);
+          server.close(() => {});
+          rejectPromise(err);
+        };
+        const onListening = () => {
+          server.removeListener('error', onError);
+          this.server = server;
+          resolvePromise();
+        };
+        server.once('error', onError);
+        server.once('listening', onListening);
+        server.listen(port, '127.0.0.1');
+      });
+
+    try {
+      await listen(requestedPort);
+      return requestedPort;
+    } catch (err: any) {
+      if (err?.code !== 'EADDRINUSE') throw err;
+
+      const fallbackPort = await FalkorDBManager.findOpenPort(requestedPort + 1);
+      await listen(fallbackPort);
+      this.log(
+        `Port ${requestedPort} is in use (another workspace's daemon?); listening on ${fallbackPort} instead.`
+      );
+      this.tracer.line(`port: ${requestedPort} busy, fell back to ${fallbackPort}`);
+      return fallbackPort;
+    }
+  }
+
   public async start(startOpts?: { withWatcher?: boolean }): Promise<{ port: number; pid: number }> {
+    try {
+      return await this.startInner(startOpts);
+    } catch (err) {
+      // Never leak the embedded FalkorDB child process (or the HTTP socket) when
+      // startup fails part-way — for example when the requested port is taken.
+      await this.stop().catch(() => {});
+      throw err;
+    }
+  }
+
+  private async startInner(startOpts?: { withWatcher?: boolean }): Promise<{ port: number; pid: number }> {
     const startupNs = process.hrtime.bigint();
     const workdir = resolve(this.options.workdir);
     const dataDir = join(workdir, this.options.dataDir ?? '.knowcode');
@@ -81,12 +146,14 @@ export class KnowCodeDaemon {
       mkdirSync(dataDir, { recursive: true });
     }
 
+    const requestedPort = this.options.port ?? 48123;
+
     this.log(`Starting FalkorDB embedded database in ${dataDir}...`);
     const openSpan = this.tracer.span(`db: embedded FalkorDB opened (dir=${dataDir})`);
     this.falkorInstance = await this.falkorManager.start({
       dataDir,
       customUrl: this.options.falkordbUrl,
-      preferredPort: (this.options.port ?? 48123) + 10,
+      preferredPort: requestedPort + 10,
     });
     openSpan.end();
 
@@ -102,21 +169,10 @@ export class KnowCodeDaemon {
       );
     }
 
-    // Start HTTP daemon server
-    const daemonPort = this.options.port ?? 48123;
-    this.server = http.createServer(async (req, res) => {
-      try {
-        await this.handleRequest(req, res);
-      } catch (err: any) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: err?.message ?? String(err) }));
-      }
-    });
-
-    await new Promise<void>((resolvePromise, rejectPromise) => {
-      this.server!.listen(daemonPort, '127.0.0.1', () => resolvePromise());
-      this.server!.on('error', rejectPromise);
-    });
+    // Start HTTP daemon server. The port is a best-effort request: another
+    // workspace's daemon may already hold it, and the actual port is recorded in
+    // daemon.json so clients always find this daemon.
+    const daemonPort = await this.listenOnAvailablePort(requestedPort);
 
     // Write daemon info file
     const daemonInfoPath = join(dataDir, 'daemon.json');
@@ -517,6 +573,10 @@ export class KnowCodeDaemon {
         daemonRunning: true,
         daemonPid: process.pid,
         port: (this.server?.address() as any)?.port,
+        // Identity of the workspace this daemon serves. Clients compare it
+        // against their own workdir so a daemon belonging to another project
+        // can never answer for this one.
+        workdir: resolve(this.options.workdir),
         dbPath: this.falkorInstance?.dbPath ?? '',
         totalFiles: (dbStats?.totalFiles ?? 0) + (dbStats?.totalDocs ?? 0),
         totalCodeFiles: dbStats?.totalFiles ?? 0,

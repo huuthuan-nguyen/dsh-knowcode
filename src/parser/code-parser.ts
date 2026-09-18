@@ -92,6 +92,9 @@ export class CodeParser {
       CodeParser.parseGeneric(filePath, lines, symbols, calls);
     }
 
+    // Accurately compute endLine for all symbols (functions, methods, classes)
+    CodeParser.computeEndLines(lines, symbols, lang);
+
     // Compute structural AST hash for functions and methods for duplicate clone detection
     for (const sym of symbols) {
       if (sym.kind === 'function' || sym.kind === 'method') {
@@ -115,6 +118,66 @@ export class CodeParser {
       imports,
       heritage,
     };
+  }
+
+  /**
+   * Join a declaration's lines up to and including the line that closes its
+   * parameter list.
+   *
+   * Declaration regexes used to require the whole `(...)` on one line, so any
+   * function whose parameters wrapped — which is most real-world code, including
+   * this plugin's own `executeKnowCodeTool` — was never indexed at all: it had no
+   * symbol, so definition lookup, caller/callee tracing, blast radius and clone
+   * detection all silently missed it.
+   *
+   * @param lines - all source lines.
+   * @param startIdx - 0-based index of the declaration's first line.
+   * @param maxLookahead - safety bound on how many lines to consume.
+   * @returns the joined declaration text (single-spaced, trimmed).
+   */
+  private static gatherParens(
+    lines: string[],
+    startIdx: number,
+    maxLookahead = 40
+  ): { text: string; endIdx: number } {
+    const parts: string[] = [];
+    let depth = 0;
+    let sawOpen = false;
+    let endIdx = startIdx;
+
+    for (let i = startIdx; i < lines.length && i - startIdx <= maxLookahead; i++) {
+      const raw = lines[i] ?? '';
+      // Ignore comments when balancing brackets.
+      const code = raw.replace(/\/\/.*$/, '').replace(/\/\*[\s\S]*?\*\//g, '');
+      for (const ch of code) {
+        if (ch === '(') {
+          depth++;
+          sawOpen = true;
+        } else if (ch === ')') {
+          depth--;
+        }
+      }
+      parts.push(raw.trim());
+      endIdx = i;
+      if (sawOpen && depth <= 0) break;
+      if (!sawOpen && i > startIdx) break;
+    }
+
+    return { text: parts.join(' '), endIdx };
+  }
+
+  /**
+   * Join a declaration's lines up to the line that opens its body, for
+   * declarations whose header (extends/implements clauses) may wrap.
+   */
+  private static gatherToBrace(lines: string[], startIdx: number, maxLookahead = 20): string {
+    const parts: string[] = [];
+    for (let i = startIdx; i < lines.length && i - startIdx <= maxLookahead; i++) {
+      const raw = lines[i] ?? '';
+      parts.push(raw.trim());
+      if (raw.includes('{')) break;
+    }
+    return parts.join(' ');
   }
 
   /**
@@ -168,25 +231,32 @@ export class CodeParser {
           specifiers.push(...namedImps.split(',').map((s) => s.trim().split(/\s+as\s+/)[0]).filter(Boolean));
         }
 
-        const resolved = CodeParser.resolveRelativePath(file, importPath);
+        const candidates = CodeParser.resolveRelativeCandidates(file, importPath);
         imports.push({
           sourceFile: file,
           importedPath: importPath,
-          resolvedFile: resolved,
+          resolvedFile: candidates[0],
+          resolvedCandidates: candidates,
           specifiers,
         });
       }
 
       // Exported or plain class: [export] class Foo [extends Bar] [implements Baz]
-      const classMatch = trimmed.match(/^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+(\w+))?(?:\s+implements\s+([\w\s,]+))?/);
+      // Heritage clauses may wrap onto following lines, so match the joined header.
+      const classHeader = CodeParser.gatherToBrace(lines, i);
+      const classMatch = classHeader.match(/^(?:export\s+)?(?:default\s+)?(?:abstract\s+)?class\s+(\w+)(?:\s+extends\s+(\w+))?(?:\s+implements\s+([\w\s,]+))?/);
       if (classMatch) {
         const name = classMatch[1];
         const extendsClass = classMatch[2];
         const implementsInterfaces = classMatch[3];
         currentClass = name;
         classBraceDepth = 0;
-        const openCount = (line.match(/{/g) || []).length;
-        const closeCount = (line.match(/}/g) || []).length;
+        // Count braces from the whole gathered header: when `extends`/`implements`
+        // wrap, the opening `{` sits on a later line and counting only `line`
+        // would leave the depth at 0, immediately closing the class scope and
+        // hiding every method inside it.
+        const openCount = (classHeader.match(/{/g) || []).length;
+        const closeCount = (classHeader.match(/}/g) || []).length;
         classBraceDepth += openCount - closeCount;
 
         const symId = `${file}:${name}:${lineNum}`;
@@ -216,7 +286,8 @@ export class CodeParser {
       }
 
       // Interface: [export] interface Foo [extends Bar]
-      const ifaceMatch = trimmed.match(/^(?:export\s+)?interface\s+(\w+)(?:\s+extends\s+([\w\s,]+))?/);
+      const ifaceHeader = CodeParser.gatherToBrace(lines, i);
+      const ifaceMatch = ifaceHeader.match(/^(?:export\s+)?interface\s+(\w+)(?:\s+extends\s+([\w\s,]+))?/);
       if (ifaceMatch) {
         const name = ifaceMatch[1];
         const extendsIface = ifaceMatch[2];
@@ -264,11 +335,12 @@ export class CodeParser {
 
       // Method inside class: [public|private|protected]? [async] methodName(...)
       if (currentClass) {
-        const methodMatch = trimmed.match(/^(?:(public|private|protected)\s+)?(?:async\s+)?(\w+)\s*\(([^)]*)\)/);
+        const methodMatch = trimmed.match(/^(?:(public|private|protected)\s+)?(?:async\s+)?(\w+)\s*\(/);
         if (methodMatch && !trimmed.startsWith('if') && !trimmed.startsWith('for') && !trimmed.startsWith('switch')) {
           const vis = (methodMatch[1] as any) ?? 'public';
           const name = methodMatch[2];
           const qname = `${currentClass}.${name}`;
+          const { text: signatureText } = CodeParser.gatherParens(lines, i);
           symbols.push({
             id: `${file}:${qname}:${lineNum}`,
             name,
@@ -277,7 +349,7 @@ export class CodeParser {
             file,
             startLine: lineNum,
             endLine: lineNum,
-            signature: trimmed.split('{')[0].trim(),
+            signature: signatureText.split('{')[0].trim(),
             docstring,
             visibility: vis,
           });
@@ -299,10 +371,11 @@ export class CodeParser {
         }
       }
 
-      // Function: [export] [async] function foo(...)
-      const fnMatch = trimmed.match(/^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(([^)]*)\)/);
+      // Function: [export] [async] function foo(...)  — parameters may wrap
+      const fnMatch = trimmed.match(/^(?:export\s+)?(?:default\s+)?(?:async\s+)?function\s+(\w+)\s*\(/);
       if (fnMatch) {
         const name = fnMatch[1];
+        const { text: signatureText } = CodeParser.gatherParens(lines, i);
         symbols.push({
           id: `${file}:${name}:${lineNum}`,
           name,
@@ -311,7 +384,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: trimmed.split('{')[0].trim(),
+          signature: signatureText.split('{')[0].trim(),
           docstring,
           isExported: trimmed.startsWith('export'),
         });
@@ -319,24 +392,27 @@ export class CodeParser {
         continue;
       }
 
-      // Arrow function / const: [export] const foo = (async)? (...) =>
-      const arrowMatch = trimmed.match(/^(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?\(([^)]*)\)\s*(?::\s*[^=]+)?=>/);
+      // Arrow function / const: [export] const foo = (async)? (...) =>  — parameters may wrap
+      const arrowMatch = trimmed.match(/^(?:export\s+)?const\s+(\w+)\s*=\s*(?:async\s*)?\(/);
       if (arrowMatch) {
         const name = arrowMatch[1];
-        symbols.push({
-          id: `${file}:${name}:${lineNum}`,
-          name,
-          qname: name,
-          kind: 'function',
-          file,
-          startLine: lineNum,
-          endLine: lineNum,
-          signature: trimmed.split('=>')[0].trim() + ' =>',
-          docstring,
-          isExported: trimmed.startsWith('export'),
-        });
-        currentDoc = [];
-        continue;
+        const { text: signatureText } = CodeParser.gatherParens(lines, i);
+        if (signatureText.includes('=>')) {
+          symbols.push({
+            id: `${file}:${name}:${lineNum}`,
+            name,
+            qname: name,
+            kind: 'function',
+            file,
+            startLine: lineNum,
+            endLine: lineNum,
+            signature: signatureText.split('=>')[0].trim() + ' =>',
+            docstring,
+            isExported: trimmed.startsWith('export'),
+          });
+          currentDoc = [];
+          continue;
+        }
       }
 
       // Call extraction: foo.bar(...) or baz(...)
@@ -386,6 +462,14 @@ export class CodeParser {
       const line = lines[i];
       const trimmed = line.trim();
 
+      // Reset currentClass if an unindented, non-comment, non-empty statement appears
+      if (currentClass && trimmed.length > 0 && !trimmed.startsWith('#')) {
+        const isIndented = line.startsWith(' ') || line.startsWith('\t');
+        if (!isIndented && !trimmed.startsWith('class ')) {
+          currentClass = null;
+        }
+      }
+
       // Imports: from foo import bar, baz OR import foo
       const fromImport = trimmed.match(/^from\s+([.\w]+)\s+import\s+(.+)/);
       if (fromImport) {
@@ -424,12 +508,13 @@ export class CodeParser {
         continue;
       }
 
-      // Function or method: def foo(bar, baz):
-      const defMatch = trimmed.match(/^def\s+(\w+)\s*\(([^)]*)\)/);
+      // Function or method: def foo(bar, baz):  — parameters may wrap
+      const defMatch = trimmed.match(/^def\s+(\w+)\s*\(/);
       if (defMatch) {
         const name = defMatch[1];
         const isMethod = line.startsWith('    ') || line.startsWith('\t');
         const qname = isMethod && currentClass ? `${currentClass}.${name}` : name;
+        const { text: signatureText } = CodeParser.gatherParens(lines, i);
         symbols.push({
           id: `${file}:${qname}:${lineNum}`,
           name,
@@ -438,7 +523,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: trimmed,
+          signature: signatureText,
           visibility: name.startsWith('_') ? 'private' : 'public',
           isExported: !name.startsWith('_'),
         });
@@ -499,12 +584,13 @@ export class CodeParser {
         continue;
       }
 
-      // Function or method: func (r *Receiver) Foo(...) or func Foo(...)
-      const funcMatch = trimmed.match(/^func\s+(?:\((?:[*\w\s]+)?\*?(\w+)\)\s+)?(\w+)\s*\(([^)]*)\)/);
+      // Function or method: func (r *Receiver) Foo(...) or func Foo(...)  — parameters may wrap
+      const funcMatch = trimmed.match(/^func\s+(?:\((?:[*\w\s]+)?\*?(\w+)\)\s+)?(\w+)\s*\(/);
       if (funcMatch) {
         const receiver = funcMatch[1];
         const name = funcMatch[2];
         const qname = receiver ? `${receiver}.${name}` : name;
+        const { text: signatureText } = CodeParser.gatherParens(lines, i);
         symbols.push({
           id: `${file}:${qname}:${lineNum}`,
           name,
@@ -513,7 +599,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: trimmed,
+          signature: signatureText,
           isExported: name[0] === name[0].toUpperCase(),
         });
         continue;
@@ -582,11 +668,12 @@ export class CodeParser {
         continue;
       }
 
-      // fn: [pub] [async] fn foo(...)
-      const fnMatch = trimmed.match(/^(?:pub(?:\([^)]+\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*\(([^)]*)\)/);
+      // fn: [pub] [async] fn foo(...)  — parameters may wrap
+      const fnMatch = trimmed.match(/^(?:pub(?:\([^)]+\))?\s+)?(?:async\s+)?fn\s+(\w+)\s*\(/);
       if (fnMatch) {
         const name = fnMatch[1];
         const qname = currentImpl ? `${currentImpl}::${name}` : name;
+        const { text: signatureText } = CodeParser.gatherParens(lines, i);
         symbols.push({
           id: `${file}:${qname}:${lineNum}`,
           name,
@@ -595,7 +682,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: trimmed.split('{')[0].trim(),
+          signature: signatureText.split('{')[0].trim(),
           isExported: trimmed.startsWith('pub'),
         });
         continue;
@@ -658,28 +745,88 @@ export class CodeParser {
   }
 
   /**
-   * Resolve relative import path to project-relative file
+   * Build every project-relative path a relative import could resolve to.
+   *
+   * The parser has no filesystem access, so it cannot pick the correct one:
+   * matching a single extension-less guess against the indexed `File` nodes
+   * silently produced zero `:IMPORTS` edges. Callers match the whole candidate
+   * list against real file nodes instead.
    */
-  private static resolveRelativePath(currentFile: string, importPath: string): string | undefined {
-    if (!importPath.startsWith('.')) return undefined;
+  private static resolveRelativeCandidates(currentFile: string, importPath: string): string[] {
+    if (!importPath.startsWith('.')) return [];
 
     const dir = dirname(currentFile);
-    const resolvedBase = join(dir, importPath).replace(/\\/g, '/');
+    const base = join(dir, importPath).replace(/\\/g, '/').replace(/\/+$/, '');
 
-    // Candidate extensions
-    const candidates = [
-      resolvedBase,
-      `${resolvedBase}.ts`,
-      `${resolvedBase}.tsx`,
-      `${resolvedBase}.js`,
-      `${resolvedBase}.jsx`,
-      `${resolvedBase}/index.ts`,
-      `${resolvedBase}/index.js`,
-    ];
+    const extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.go', '.rs'];
+    const candidates = [base];
+    for (const ext of extensions) candidates.push(`${base}${ext}`);
+    for (const ext of extensions) candidates.push(`${base}/index${ext}`);
+    candidates.push(`${base}/__init__.py`);
 
-    for (const c of candidates) {
-      return c; // We return the best normalized guess
+    return Array.from(new Set(candidates));
+  }
+
+  /**
+   * Accurately calculate the endLine for each symbol (functions, methods, classes)
+   * so that structural hashing, git diff range mapping, and definition lookups
+   * cover the full body of the code block rather than just the signature line.
+   */
+  private static computeEndLines(lines: string[], symbols: CodeSymbol[], lang: string): void {
+    if (symbols.length === 0) return;
+
+    for (let sIdx = 0; sIdx < symbols.length; sIdx++) {
+      const sym = symbols[sIdx];
+      const startIdx = Math.max(0, sym.startLine - 1);
+
+      if (lang === 'python') {
+        // Python: indentation-based block boundary
+        const startLine = lines[startIdx] || '';
+        const matchIndent = startLine.match(/^([ \t]*)/);
+        const baseIndent = matchIndent ? matchIndent[1].length : 0;
+
+        // A wrapped signature puts its closing `):` back at the def's own indent,
+        // which the indentation scan would read as the end of the block. Skip past
+        // the header first, then measure the body.
+        const headerEndIdx = CodeParser.gatherParens(lines, startIdx).endIdx;
+
+        let endLine = Math.max(sym.startLine, headerEndIdx + 1);
+        for (let i = Math.max(startIdx + 1, headerEndIdx + 1); i < lines.length; i++) {
+          const l = lines[i];
+          const trimmed = l.trim();
+          if (!trimmed || trimmed.startsWith('#')) {
+            // Empty line or comment continues the block if subsequent lines are indented
+            continue;
+          }
+          const currMatch = l.match(/^([ \t]*)/);
+          const currIndent = currMatch ? currMatch[1].length : 0;
+          if (currIndent <= baseIndent) {
+            break;
+          }
+          endLine = i + 1;
+        }
+        sym.endLine = Math.max(sym.startLine, endLine);
+      } else {
+        // Brace-based languages: TS, JS, Go, Rust, Java, C, C++
+        let openBraces = 0;
+        let foundOpen = false;
+        let endLine = sym.startLine;
+
+        for (let i = startIdx; i < lines.length; i++) {
+          const l = lines[i];
+          const opens = (l.match(/{/g) || []).length;
+          const closes = (l.match(/}/g) || []).length;
+
+          if (opens > 0) foundOpen = true;
+          openBraces += opens - closes;
+
+          if (foundOpen && openBraces <= 0) {
+            endLine = i + 1;
+            break;
+          }
+        }
+        sym.endLine = Math.max(sym.startLine, endLine);
+      }
     }
-    return undefined;
   }
 }
