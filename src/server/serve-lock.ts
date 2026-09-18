@@ -15,6 +15,12 @@ export interface AcquireResult {
   acquired: boolean;
   /** The daemon already serving this workspace, when `acquired` is false. */
   existing?: ServeLockRecord | null;
+  /**
+   * The guard names a process that no longer exists, yet the file could not be
+   * removed — a read-only data directory, or a file owned by another user. Reported
+   * separately so the caller does not claim a live daemon is serving.
+   */
+  staleUnremovable?: boolean;
 }
 
 /** Path of the guard file for a data directory. */
@@ -88,10 +94,14 @@ export function acquireServeLock(dataDir: string, workdir: string, port?: number
     if (existing && isProcessAlive(existing.pid)) {
       return { acquired: false, existing };
     }
+
     try {
       unlinkSync(path);
     } catch {
-      /* raced with another reclaimer */
+      // Swallowing this produced a misleading answer: the caller reported a live
+      // daemon on a pid that had been gone for hours, because the file could not be
+      // deleted. Say what actually happened instead.
+      return { acquired: false, existing, staleUnremovable: true };
     }
   }
 
@@ -123,11 +133,16 @@ export function releaseServeLock(dataDir: string): boolean {
 export class DaemonAlreadyRunningError extends Error {
   constructor(
     readonly existing: ServeLockRecord | null,
-    readonly workdir: string
+    readonly workdir: string,
+    readonly staleUnremovable: boolean = false,
+    readonly lockPath?: string
   ) {
     super(
-      `A KnowCode daemon is already serving ${workdir}` +
-        (existing ? ` (pid ${existing.pid}${existing.port ? `, port ${existing.port}` : ''})` : '')
+      staleUnremovable
+        ? `A stale KnowCode guard exists for ${workdir} (pid ${existing?.pid ?? '?'} is gone) ` +
+          `but could not be removed — delete ${lockPath ?? 'serve.lock'} in its data directory and retry`
+        : `A KnowCode daemon is already serving ${workdir}` +
+          (existing ? ` (pid ${existing.pid}${existing.port ? `, port ${existing.port}` : ''})` : '')
     );
     this.name = 'DaemonAlreadyRunningError';
   }

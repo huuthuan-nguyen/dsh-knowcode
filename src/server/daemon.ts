@@ -16,6 +16,7 @@ import { readMtimeMs } from './fs-mtime.js';
 import {
   acquireServeLock,
   releaseServeLock,
+  serveLockPath,
   DaemonAlreadyRunningError,
 } from './serve-lock.js';
 import {
@@ -247,7 +248,12 @@ export class KnowCodeDaemon {
     // exclusive create so simultaneous starts cannot both win.
     const lock = acquireServeLock(dataDir, workdir, requestedPort);
     if (!lock.acquired) {
-      throw new DaemonAlreadyRunningError(lock.existing ?? null, workdir);
+      throw new DaemonAlreadyRunningError(
+        lock.existing ?? null,
+        workdir,
+        lock.staleUnremovable === true,
+        serveLockPath(dataDir)
+      );
     }
     this.dataDir = dataDir;
 

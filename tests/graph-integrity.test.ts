@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert';
-import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync, chmodSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { KnowCodeDaemon } from '../lib/server/daemon.js';
 import { KnowCodeRpcClient } from '../lib/server/client-rpc.js';
@@ -1222,6 +1222,38 @@ test('the parser does not throw on awkward inputs', () => {
       // A parsed file must survive the alias and signature passes too.
       if (parsed) JSON.stringify(parsed.libraryAliases ?? []);
     }, `${file} must not throw`);
+  }
+});
+
+test('an unremovable stale guard is reported as such, not as a live daemon', async () => {
+  // A guard naming a dead pid is normally reclaimed. When it cannot be removed — a
+  // read-only data directory, or a file owned by another user — the caller used to be
+  // told a daemon was serving a pid that had been gone for hours.
+  const dataDir = join(GRAPH_WS, '.knowcode');
+  writeWs(GRAPH_WS, { 'src/a.ts': 'export function a() { return 1; }\n' });
+  mkdirSync(dataDir, { recursive: true });
+  writeFileSync(
+    join(dataDir, 'serve.lock'),
+    JSON.stringify({ pid: 999_999, port: 1, workdir: GRAPH_WS, startedAt: 'stale' })
+  );
+
+  chmodSync(dataDir, 0o500);
+  try {
+    const daemon = new KnowCodeDaemon({ workdir: GRAPH_WS, port: 48690 });
+    await assert.rejects(
+      () => daemon.start({ withWatcher: false }),
+      (err: any) => {
+        assert.strictEqual(err.name, 'DaemonAlreadyRunningError');
+        assert.strictEqual(err.staleUnremovable, true, 'the stale case must be distinguishable');
+        assert.match(err.message, /stale KnowCode guard/);
+        assert.match(err.message, /could not be removed/);
+        assert.doesNotMatch(err.message, /is already serving/, 'must not claim a live daemon');
+        return true;
+      }
+    );
+  } finally {
+    chmodSync(dataDir, 0o755);
+    clean([GRAPH_WS]);
   }
 });
 

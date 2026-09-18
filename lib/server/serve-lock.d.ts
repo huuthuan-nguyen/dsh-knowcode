@@ -8,6 +8,12 @@ export interface AcquireResult {
     acquired: boolean;
     /** The daemon already serving this workspace, when `acquired` is false. */
     existing?: ServeLockRecord | null;
+    /**
+     * The guard names a process that no longer exists, yet the file could not be
+     * removed — a read-only data directory, or a file owned by another user. Reported
+     * separately so the caller does not claim a live daemon is serving.
+     */
+    staleUnremovable?: boolean;
 }
 /** Path of the guard file for a data directory. */
 export declare function serveLockPath(dataDir: string): string;
@@ -42,5 +48,7 @@ export declare function releaseServeLock(dataDir: string): boolean;
 export declare class DaemonAlreadyRunningError extends Error {
     readonly existing: ServeLockRecord | null;
     readonly workdir: string;
-    constructor(existing: ServeLockRecord | null, workdir: string);
+    readonly staleUnremovable: boolean;
+    readonly lockPath?: string | undefined;
+    constructor(existing: ServeLockRecord | null, workdir: string, staleUnremovable?: boolean, lockPath?: string | undefined);
 }
