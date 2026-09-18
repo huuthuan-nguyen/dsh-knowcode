@@ -4,6 +4,13 @@ export interface DaemonOptions {
     port?: number;
     dataDir?: string;
     falkordbUrl?: string;
+    /**
+     * Largest file to read and index, in bytes.
+     *
+     * Enforced before any read; the option was previously documented and resolved
+     * but never consulted, so a multi-megabyte file was always read in full.
+     */
+    maxFileSize?: number;
     onLog?: (msg: string) => void;
     /** Enable Microsoft `tgrep`-style `[trace]` output. */
     trace?: boolean;
@@ -22,6 +29,8 @@ export declare class KnowCodeDaemon {
     private tracer;
     /** Data directory of the running instance, for releasing the workspace guard. */
     private dataDir;
+    /** Largest file to read and index, in bytes. */
+    private readonly maxFileSize;
     constructor(options: DaemonOptions);
     /** Expose the tracer so CLI callers can emit their own spans. */
     getTracer(): Tracer;

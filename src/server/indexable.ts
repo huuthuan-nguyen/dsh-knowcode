@@ -1,0 +1,192 @@
+import { statSync } from 'node:fs';
+import { extname } from 'node:path';
+
+/**
+ * Single source of truth for "what gets indexed".
+ *
+ * The daemon's discovery glob and the file watcher previously decided this
+ * independently, which is how they drifted: the glob only ever offered code and
+ * documentation, while the watcher accepted any file chokidar reported and read
+ * it in full before discovering it had nothing to parse. A SQLite database being
+ * written by a running application was therefore read into memory and hashed on
+ * every change, only to be discarded.
+ */
+
+/** Extensions whose contents are parsed as code or documentation. */
+export const INDEXABLE_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.ts',
+  '.tsx',
+  '.js',
+  '.jsx',
+  '.mjs',
+  '.cjs',
+  '.py',
+  '.go',
+  '.rs',
+  '.java',
+  '.c',
+  '.cpp',
+  '.h',
+  '.hpp',
+  '.md',
+  '.mdx',
+  '.markdown',
+  '.txt',
+]);
+
+/** fast-glob pattern covering exactly {@link INDEXABLE_EXTENSIONS}. */
+export const INDEXABLE_GLOB =
+  '**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,c,cpp,h,hpp,md,mdx,markdown,txt}';
+
+/** Directory path fragments never indexed and never watched. */
+export const IGNORED_DIR_FRAGMENTS: readonly string[] = [
+  '/node_modules',
+  '/.git',
+  '/.knowcode',
+  '/dist',
+  '/lib',
+  '/build',
+  '/.next',
+  '/coverage',
+  '/bin',
+  '/target',
+  '/vendor',
+  '/.venv',
+  '/venv',
+  '/__pycache__',
+];
+
+/** fast-glob ignore patterns covering exactly {@link IGNORED_DIR_FRAGMENTS}. */
+export const IGNORE_GLOBS: readonly string[] = IGNORED_DIR_FRAGMENTS.map((f) => `**${f}/**`);
+
+/**
+ * Database and binary extensions that must never be read as text.
+ *
+ * Indexing already excludes these through the extension allowlist; this list
+ * exists so the intent is explicit and testable, and so a future allowlist change
+ * cannot silently start reading a database file.
+ */
+export const NON_TEXT_EXTENSIONS: ReadonlySet<string> = new Set([
+  '.db',
+  '.db3',
+  '.sqlite',
+  '.sqlite3',
+  '.duckdb',
+  '.mdb',
+  '.accdb',
+  '.rdb',
+  '.aof',
+  '.realm',
+  '.db-wal',
+  '.db-shm',
+  '.db-journal',
+  '.sqlite-wal',
+  '.sqlite-shm',
+  '.sqlite3-wal',
+  '.sqlite3-shm',
+  '.bin',
+  '.dat',
+  '.pack',
+  '.idx',
+  '.node',
+  '.so',
+  '.dylib',
+  '.dll',
+  '.exe',
+  '.class',
+  '.jar',
+  '.pyc',
+  '.pyo',
+  '.wasm',
+  '.zip',
+  '.tar',
+  '.gz',
+  '.bz2',
+  '.xz',
+  '.7z',
+  '.pdf',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.ico',
+  '.bmp',
+  '.tiff',
+  '.mp3',
+  '.mp4',
+  '.mov',
+  '.avi',
+  '.woff',
+  '.woff2',
+  '.ttf',
+  '.otf',
+  '.eot',
+]);
+
+/** SQLite sidecar files, which end in `-wal`/`-shm`/`-journal` rather than a plain extension. */
+const SQLITE_SIDECAR = /\.(db|db3|sqlite|sqlite3)(-(wal|shm|journal))$/i;
+
+/** Whether a path sits under an ignored directory. */
+export function isIgnoredPath(relPath: string): boolean {
+  const norm = `/${relPath.replace(/\\/g, '/').replace(/^\/+/, '')}`;
+  return IGNORED_DIR_FRAGMENTS.some((frag) => norm.includes(`${frag}/`) || norm.endsWith(frag));
+}
+
+/** Whether an extension should never be read as text. */
+export function isNonTextPath(relPath: string): boolean {
+  const base = relPath.replace(/\\/g, '/').split('/').pop() ?? '';
+  if (SQLITE_SIDECAR.test(base)) return true;
+  return NON_TEXT_EXTENSIONS.has(extname(base).toLowerCase());
+}
+
+/** Whether a path's contents are worth reading at all. */
+export function isIndexablePath(relPath: string): boolean {
+  if (isIgnoredPath(relPath)) return false;
+  if (isNonTextPath(relPath)) return false;
+  return INDEXABLE_EXTENSIONS.has(extname(relPath).toLowerCase());
+}
+
+/** Largest file read and indexed when no limit is configured. */
+export const DEFAULT_MAX_FILE_SIZE = 1024 * 1024;
+
+/** Why a file was not indexed. */
+export type SkipReason = 'ignored' | 'not-text' | 'extension' | 'too-large' | 'unreadable';
+
+export interface IndexDecision {
+  ok: boolean;
+  reason?: SkipReason;
+  /** Size in bytes, when it could be read. */
+  size?: number;
+}
+
+/**
+ * Decide whether a file should be read and indexed.
+ *
+ * `maxFileSize` is enforced here, before any read: the option was documented and
+ * resolved but never consulted, so a multi-megabyte file was read and parsed in
+ * full no matter what the user configured.
+ *
+ * @param absPath - absolute path to inspect.
+ * @param maxFileSize - largest file to read, in bytes.
+ * @param relPath - workspace-relative path used for extension checks; defaults to `absPath`.
+ */
+export function decideIndexing(
+  absPath: string,
+  maxFileSize: number,
+  relPath: string = absPath
+): IndexDecision {
+  if (isIgnoredPath(relPath)) return { ok: false, reason: 'ignored' };
+  if (isNonTextPath(relPath)) return { ok: false, reason: 'not-text' };
+  if (!INDEXABLE_EXTENSIONS.has(extname(relPath).toLowerCase())) return { ok: false, reason: 'extension' };
+
+  let size: number;
+  try {
+    size = statSync(absPath).size;
+  } catch {
+    return { ok: false, reason: 'unreadable' };
+  }
+
+  if (size > maxFileSize) return { ok: false, reason: 'too-large', size };
+  return { ok: true, size };
+}

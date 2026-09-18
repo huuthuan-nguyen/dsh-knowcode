@@ -26,6 +26,7 @@ program
   .option('-p, --port <number>', 'Daemon port', (v) => parseInt(v, 10))
   .option('-d, --data-dir <path>', 'Data directory', '.knowcode')
   .option('-t, --trace', 'Emit tgrep-style [trace] logs to stderr')
+  .option('-m, --max-file-size <bytes>', 'Largest file to index, in bytes', (v) => parseInt(v, 10))
   .action(async (dir = '.', options) => {
     try {
       await runIndexCommand(dir, options);
@@ -42,6 +43,7 @@ program
   .option('-d, --data-dir <path>', 'Data directory', '.knowcode')
   .option('-t, --trace', 'Emit tgrep-style [trace] logs to stderr')
   .option('-f, --force-index', 'Skip the stale check and always run a full re-index')
+  .option('-m, --max-file-size <bytes>', 'Largest file to index, in bytes', (v) => parseInt(v, 10))
   .action(async (dir = '.', options) => {
     try {
       await runServeCommand(dir, options);

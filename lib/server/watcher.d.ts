@@ -11,6 +11,8 @@ export interface WatcherOptions {
     onTrace?: TraceSink;
     /** Called once chokidar has finished its initial scan and is delivering events. */
     onReady?: () => void;
+    /** Largest file to read and index, in bytes. */
+    maxFileSize?: number;
 }
 export declare class CodeWatcher {
     private options;
@@ -22,6 +24,8 @@ export declare class CodeWatcher {
     private linkEngine;
     private tracer;
     private ready;
+    /** Largest file to read and index, in bytes. */
+    private readonly maxFileSize;
     constructor(options: WatcherOptions);
     start(): void;
     /** Whether chokidar finished its initial scan and is delivering events. */

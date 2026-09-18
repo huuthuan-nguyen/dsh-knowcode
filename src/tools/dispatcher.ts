@@ -49,6 +49,8 @@ export interface DispatchOptions {
   autoStartDaemon?: boolean;
   /** How long to wait for an auto-started daemon to answer before giving up. */
   autoStartTimeoutMs?: number;
+  /** Largest file an auto-started daemon may read and index, in bytes. */
+  maxFileSize?: number;
 }
 
 export async function executeKnowCodeTool(
@@ -193,6 +195,7 @@ export async function executeKnowCodeTool(
   if (!isAlive && options.autoStartDaemon === true) {
     const result = await ensureDaemonStarted(workdir, daemonPort, {
       readyTimeoutMs: options.autoStartTimeoutMs,
+      maxFileSize: options.maxFileSize,
     });
     if (result.started) {
       isAlive = true;

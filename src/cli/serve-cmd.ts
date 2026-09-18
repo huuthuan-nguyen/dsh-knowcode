@@ -5,7 +5,13 @@ import { createTraceSink, isTraceEnabled } from './trace-flag.js';
 
 export async function runServeCommand(
   targetDir: string = '.',
-  options: { port?: number; dataDir?: string; trace?: boolean; forceIndex?: boolean } = {}
+  options: {
+    port?: number;
+    dataDir?: string;
+    trace?: boolean;
+    forceIndex?: boolean;
+    maxFileSize?: number;
+  } = {}
 ): Promise<void> {
   const workdir = resolve(targetDir);
   const tracing = isTraceEnabled(options.trace);
@@ -14,6 +20,7 @@ export async function runServeCommand(
     workdir,
     port: options.port,
     dataDir: options.dataDir,
+    maxFileSize: options.maxFileSize,
     trace: tracing,
     onTrace: createTraceSink(tracing),
     onLog: (msg) => console.log(`[KnowCode] ${msg}`),

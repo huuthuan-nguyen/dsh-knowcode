@@ -20,6 +20,8 @@ export interface AutoStartOptions {
   readyTimeoutMs?: number;
   /** Interval between readiness probes. */
   pollIntervalMs?: number;
+  /** Largest file the spawned daemon may read and index, in bytes. */
+  maxFileSize?: number;
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 20_000;
@@ -180,7 +182,12 @@ async function runAutoStart(
   const logFd = openServeLog(dataDir);
 
   try {
-    const child = spawn(process.execPath, [cliPath, 'serve', workdir, '--port', String(port)], {
+    const args = [cliPath, 'serve', workdir, '--port', String(port)];
+    if (typeof options.maxFileSize === 'number' && options.maxFileSize > 0) {
+      args.push('--max-file-size', String(options.maxFileSize));
+    }
+
+    const child = spawn(process.execPath, args, {
       cwd: workdir,
       detached: true,
       // The daemon outlives this process; detach its stdio so the host can exit.

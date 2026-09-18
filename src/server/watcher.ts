@@ -8,18 +8,16 @@ import type { KnowCodeRepository } from '../db/client.js';
 import { LinkEngine } from '../parser/link-engine.js';
 import { Tracer, type TraceSink, fmtMs, nsToMs } from './trace.js';
 import { readMtimeMs } from './fs-mtime.js';
+import {
+  DEFAULT_MAX_FILE_SIZE,
+  IGNORED_DIR_FRAGMENTS,
+  decideIndexing,
+  isIgnoredPath,
+} from './indexable.js';
 
 /** Directory/filename fragments excluded from watching. */
-const WATCH_IGNORE_FRAGMENTS = [
-  '/node_modules',
-  '/.git',
-  '/.knowcode',
-  '/dist',
-  '/lib',
-  '/build',
-  '/.next',
-  '/bin',
-];
+/** Directory fragments never watched. Shared with indexing so the two agree. */
+const WATCH_IGNORE_FRAGMENTS = IGNORED_DIR_FRAGMENTS;
 
 export interface WatcherOptions {
   workdir: string;
@@ -32,6 +30,8 @@ export interface WatcherOptions {
   onTrace?: TraceSink;
   /** Called once chokidar has finished its initial scan and is delivering events. */
   onReady?: () => void;
+  /** Largest file to read and index, in bytes. */
+  maxFileSize?: number;
 }
 
 export class CodeWatcher {
@@ -43,8 +43,11 @@ export class CodeWatcher {
   private linkEngine: LinkEngine;
   private tracer: Tracer;
   private ready = false;
+  /** Largest file to read and index, in bytes. */
+  private readonly maxFileSize: number;
 
   constructor(private options: WatcherOptions) {
+    this.maxFileSize = options.maxFileSize ?? DEFAULT_MAX_FILE_SIZE;
     this.linkEngine = new LinkEngine(options.repo);
     this.tracer = new Tracer({
       enabled: options.trace ?? false,
@@ -57,7 +60,11 @@ export class CodeWatcher {
 
     const isIgnored = (path: string) => {
       const norm = path.replace(/\\/g, '/');
-      return WATCH_IGNORE_FRAGMENTS.some((frag) => norm.includes(frag)) || norm.endsWith('.log');
+      return (
+        WATCH_IGNORE_FRAGMENTS.some((frag) => norm.includes(frag)) ||
+        isIgnoredPath(norm) ||
+        norm.endsWith('.log')
+      );
     };
 
     this.watcher = watch(this.options.workdir, {
@@ -175,6 +182,18 @@ export class CodeWatcher {
     for (const relPath of changes) {
       const absPath = `${this.options.workdir}/${relPath}`;
       if (!existsSync(absPath)) continue;
+
+      // Decide from the path and its size BEFORE reading: a database file being
+      // written by a running application was previously read in full on every
+      // change only to be discarded, and an oversized file was never skipped.
+      const decision = decideIndexing(absPath, this.maxFileSize, relPath);
+      if (!decision.ok) {
+        skipped++;
+        if (tracing && decision.reason === 'too-large') {
+          this.tracer.line(`skip ${relPath} (${decision.size} bytes > maxFileSize ${this.maxFileSize})`);
+        }
+        continue;
+      }
 
       let content = '';
       try {

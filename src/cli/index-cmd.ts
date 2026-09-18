@@ -5,7 +5,7 @@ import { createTraceSink, isTraceEnabled } from './trace-flag.js';
 
 export async function runIndexCommand(
   targetDir: string = '.',
-  options: { port?: number; dataDir?: string; trace?: boolean } = {}
+  options: { port?: number; dataDir?: string; trace?: boolean; maxFileSize?: number } = {}
 ): Promise<void> {
   const workdir = resolve(targetDir);
   const tracing = isTraceEnabled(options.trace);
@@ -26,6 +26,7 @@ export async function runIndexCommand(
     workdir,
     port: options.port,
     dataDir: options.dataDir,
+    maxFileSize: options.maxFileSize,
     trace: tracing,
     onTrace,
     onLog: (msg) => console.log(`[KnowCode] ${msg}`),

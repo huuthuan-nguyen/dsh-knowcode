@@ -17,23 +17,22 @@ import {
   releaseServeLock,
   DaemonAlreadyRunningError,
 } from './serve-lock.js';
+import {
+  INDEXABLE_GLOB,
+  IGNORE_GLOBS,
+  DEFAULT_MAX_FILE_SIZE,
+  decideIndexing,
+} from './indexable.js';
 import type { KnowCodeStats } from '../types.js';
 
-/** File globs considered indexable. Shared by indexing and the stale check. */
-const STORAGE_FILE_PATTERN =
-  '**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,c,cpp,h,hpp,md,mdx,markdown,txt}';
-
-/** Directory globs never indexed or watched. */
-const INDEX_IGNORE_GLOBS = [
-  '**/node_modules/**',
-  '**/.git/**',
-  '**/.knowcode/**',
-  '**/dist/**',
-  '**/lib/**',
-  '**/build/**',
-  '**/.next/**',
-  '**/coverage/**',
-];
+/**
+ * File glob and directory ignores considered indexable.
+ *
+ * Sourced from `./indexable.js` so discovery, the stale check and the file watcher
+ * cannot drift apart.
+ */
+const STORAGE_FILE_PATTERN = INDEXABLE_GLOB;
+const INDEX_IGNORE_GLOBS = IGNORE_GLOBS;
 
 /**
  * Delete leftover Redis background-save temp files.
@@ -63,6 +62,13 @@ export interface DaemonOptions {
   port?: number;
   dataDir?: string;
   falkordbUrl?: string;
+  /**
+   * Largest file to read and index, in bytes.
+   *
+   * Enforced before any read; the option was previously documented and resolved
+   * but never consulted, so a multi-megabyte file was always read in full.
+   */
+  maxFileSize?: number;
   onLog?: (msg: string) => void;
   /** Enable Microsoft `tgrep`-style `[trace]` output. */
   trace?: boolean;
@@ -81,8 +87,11 @@ export class KnowCodeDaemon {
   private tracer: Tracer;
   /** Data directory of the running instance, for releasing the workspace guard. */
   private dataDir: string | null = null;
+  /** Largest file to read and index, in bytes. */
+  private readonly maxFileSize: number;
 
   constructor(private options: DaemonOptions) {
+    this.maxFileSize = options.maxFileSize ?? DEFAULT_MAX_FILE_SIZE;
     this.falkorManager = new FalkorDBManager();
     this.tracer = new Tracer({
       enabled: options.trace ?? false,
@@ -353,6 +362,13 @@ export class KnowCodeDaemon {
       const parseStartNs = process.hrtime.bigint();
       for (const relPath of entries) {
         const absPath = join(rootDir, relPath);
+        const decision = decideIndexing(absPath, this.maxFileSize, relPath);
+        if (!decision.ok) {
+          if (decision.reason === 'too-large') {
+            this.log(`Skipping ${relPath}: ${decision.size} bytes exceeds maxFileSize (${this.maxFileSize}).`);
+          }
+          continue;
+        }
         let content = '';
         try {
           content = readFileSync(absPath, 'utf8');
@@ -482,6 +498,13 @@ export class KnowCodeDaemon {
         continue;
       }
 
+      const decision = decideIndexing(absPath, this.maxFileSize, relPath);
+      if (!decision.ok) {
+        if (decision.reason === 'too-large') {
+          this.log(`Skipping ${relPath}: ${decision.size} bytes exceeds maxFileSize (${this.maxFileSize}).`);
+        }
+        continue;
+      }
       // mtime moved (or was never recorded) — confirm by hashing before reindexing.
       let content = '';
       try {
@@ -545,6 +568,13 @@ export class KnowCodeDaemon {
 
     for (const relPath of changed) {
       const absPath = join(rootDir, relPath);
+      const decision = decideIndexing(absPath, this.maxFileSize, relPath);
+      if (!decision.ok) {
+        if (decision.reason === 'too-large') {
+          this.log(`Skipping ${relPath}: ${decision.size} bytes exceeds maxFileSize (${this.maxFileSize}).`);
+        }
+        continue;
+      }
       let content = '';
       try {
         content = readFileSync(absPath, 'utf8');

@@ -23,5 +23,7 @@ export interface DispatchOptions {
     autoStartDaemon?: boolean;
     /** How long to wait for an auto-started daemon to answer before giving up. */
     autoStartTimeoutMs?: number;
+    /** Largest file an auto-started daemon may read and index, in bytes. */
+    maxFileSize?: number;
 }
 export declare function executeKnowCodeTool(rawAction: string, args: any, workdir: string, daemonPort?: number, options?: DispatchOptions): Promise<ExecutionResult>;

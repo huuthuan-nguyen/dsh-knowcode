@@ -20,6 +20,7 @@ import {
   readServeLock,
   DaemonAlreadyRunningError,
 } from '../lib/server/serve-lock.js';
+import { isIndexablePath, isNonTextPath, decideIndexing } from '../lib/server/indexable.js';
 
 const GRAPH_WS = resolve('/tmp/knowcode-graph-integrity');
 const IDENTITY_A = resolve('/tmp/knowcode-identity-a');
@@ -590,6 +591,47 @@ test('the plugin registers a disposal effect that stops owned daemons', () => {
 
   __resetOwnedDaemonsForTest();
   assert.doesNotThrow(() => effects[0](), 'disposal must not throw with nothing owned');
+});
+
+// ---------------------------------------------------------------------------
+// What gets indexed: extensions and size
+// ---------------------------------------------------------------------------
+
+test('database and binary files are never read or indexed', () => {
+  // Indexing always excluded them through its extension allowlist, but the watcher
+  // accepted anything chokidar reported and read it in full before discovering it
+  // had nothing to parse — so a SQLite database being written by a running
+  // application was read and hashed on every change, only to be discarded.
+  for (const p of [
+    'data.db',
+    'data.db-wal',
+    'data.db-shm',
+    'data.db-journal',
+    'app.sqlite',
+    'app.sqlite-wal',
+    'notes.sqlite3',
+    'notes.sqlite3-shm',
+    'cache.duckdb',
+    'dump.rdb',
+    'native.node',
+    'lib.dylib',
+    'bundle.wasm',
+    'archive.zip',
+    'photo.png',
+    'font.woff2',
+    'compiled.pyc',
+  ]) {
+    assert.strictEqual(isIndexablePath(p), false, `${p} must not be indexable`);
+    assert.strictEqual(isNonTextPath(p), true, `${p} must be recognised as non-text`);
+  }
+
+  // Real source and documentation stay indexable.
+  for (const p of ['src/a.ts', 'src/a.jsx', 'main.py', 'main.go', 'lib.rs', 'README.md', 'notes.txt']) {
+    assert.strictEqual(isIndexablePath(p), true, `${p} must stay indexable`);
+  }
+
+  // Ignored directories win regardless of extension.
+  assert.strictEqual(isIndexablePath('node_modules/x/index.js'), false);
 });
 
 // ---------------------------------------------------------------------------

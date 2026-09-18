@@ -11,6 +11,8 @@ export interface AutoStartOptions {
     readyTimeoutMs?: number;
     /** Interval between readiness probes. */
     pollIntervalMs?: number;
+    /** Largest file the spawned daemon may read and index, in bytes. */
+    maxFileSize?: number;
 }
 /** Pids this process owns, for diagnostics and tests. */
 export declare function ownedDaemonPids(): number[];

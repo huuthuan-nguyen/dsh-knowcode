@@ -514,9 +514,15 @@ dsh plugin add --profile web dsh-knowcode
 | `dataDir` | `.knowcode` | Directory holding the embedded database and `daemon.json`. |
 | `falkordbUrl` | *(empty)* | Connect to an external FalkorDB (e.g. `redis://127.0.0.1:6379`) instead of the embedded engine. |
 | `blastRadiusMaxDepth` | `3` | Default traversal depth for impact analysis (clamped to 1–10). |
-| `maxFileSize` | `1048576` | Largest file indexed, in bytes. |
+| `maxFileSize` | `1048576` | Largest file read and indexed, in bytes. Enforced from the file's size **before** it is read, in both the indexer and the file watcher. Set it with `knowcode serve . --max-file-size <bytes>` when running the CLI by hand. |
 | `autoStartDaemon` | `true` | Start a daemon automatically when a tool runs in a workspace that has none, instead of replying with a "run `knowcode serve .`" notice. The daemon is spawned detached from this package's own CLI and its output is appended to `<dataDir>/serve.log`. Concurrent calls share one start attempt; the first call may wait a few hundred milliseconds. |
 | `stopDaemonOnExit` | `true` | Stop the daemons **this process** spawned when the harness exits. Detached daemons outlive a tool call, so without this, quitting DSH would leave one running per project — each holding an embedded FalkorDB process, an HTTP server, a file watcher and a database file. Cleanup runs from the plugin's disposal effect, which DSH triggers on `SIGINT` (Ctrl+C) and `SIGTERM`; `SIGKILL` bypasses disposal and is the one case that still orphans a daemon. Daemons you started yourself with `knowcode serve .` are never touched. |
+
+### Files that are never indexed
+
+Discovery uses an extension allowlist — code (`ts`, `tsx`, `js`, `jsx`, `mjs`, `cjs`, `py`, `go`, `rs`, `java`, `c`, `cpp`, `h`, `hpp`) and documentation (`md`, `mdx`, `markdown`, `txt`) — so databases, archives, media and build artefacts are excluded by construction, never by name.
+
+The file watcher applies the same decision *before* reading a file, which matters for databases: a SQLite database being written by a running application fires a change on every write, and previously each one was read into memory and hashed before being discarded. `.db`, `.sqlite`, `.sqlite3` and their `-wal`/`-shm`/`-journal` sidecars are now rejected from the path alone. The allowlist and the ignore list live in one module (`src/server/indexable.ts`) shared by discovery, the stale check and the watcher, so they cannot drift apart.
 
 ### One daemon per workspace
 
@@ -629,6 +635,9 @@ Runs:
   one workspace is refused while a dead one's guard is reclaimed, `autoStartDaemon`
   brings a daemon up on demand, and shutdown stops only the daemons this process
   spawned so no `knowcode serve` is orphaned
+- Index scope: databases, archives and binaries are rejected from the path alone
+  (including SQLite `-wal`/`-shm`/`-journal` sidecars), and `maxFileSize` is
+  enforced before any read instead of being a documented no-op
 
 ---
 
