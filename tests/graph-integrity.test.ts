@@ -92,6 +92,74 @@ test('parser computes indentation-based endLine for Python and keeps class scope
   assert.strictEqual(compute.endLine, 10);
 });
 
+test('braces inside a parameter list or return type do not truncate a body', () => {
+  // Regression: brace counting started on the declaration's first line, so a
+  // balanced `{}` in a default value (`opts: Thing = {}`) or a return type
+  // (`Promise<{ ok: boolean }>`) closed the count immediately. A 380-line
+  // function was recorded as ending on its own signature line, which broke
+  // structural hashing and git-diff range mapping, and truncated the signature.
+  const src = [
+    'export async function withDefault(', // 1
+    '  opts: Thing = {},', // 2
+    '  other: string = "x",', // 3
+    '): Promise<{ ok: boolean }> {', // 4
+    '  const inner = { a: 1 };', // 5
+    '  if (inner.a) {', // 6
+    '    return { ok: true };', // 7
+    '  }', // 8
+    '  return { ok: false };', // 9
+    '}', // 10
+  ].join('\n');
+
+  const parsed = CodeParser.parseFile('src/api.ts', src)!;
+  const fn = parsed.symbols.find((s) => s.name === 'withDefault')!;
+
+  assert.strictEqual(fn.endLine, 10, 'body must run to the real closing brace');
+  assert.strictEqual(
+    fn.signature,
+    'export async function withDefault( opts: Thing = {}, other: string = "x", ): Promise<{ ok: boolean }>',
+    'signature must keep default values and the return type'
+  );
+
+  // A wrapped class header must not have its body truncated either.
+  const cls = CodeParser.parseFile(
+    'src/c.ts',
+    ['export class Multi', '  extends Base', '  implements IFace {', '  run(): void {}', '}'].join('\n')
+  )!;
+  assert.strictEqual(cls.symbols.find((s) => s.name === 'Multi')!.endLine, 5);
+  assert.strictEqual(cls.symbols.find((s) => s.name === 'run')!.endLine, 4);
+});
+
+test('call extraction ignores text inside string and template literals', () => {
+  // Regression: call extraction ran over raw source, so a Cypher/SQL query held in
+  // a template literal produced "calls" to MATCH, MERGE, CREATE, count, … — this
+  // repository accumulated 600+ such phantom edges, which dominated `explore`'s
+  // hub ranking and polluted caller/callee/blast-radius output with SQL keywords.
+  const src = [
+    'const cypher = `', // 1
+    '  MATCH (a:File)-[:IMPORTS]->(b:File)', // 2
+    '  MERGE (x)-[:Y]->(z)', // 3
+    '  RETURN count(*) AS n', // 4
+    '`;', // 5
+    'const sql = "SELECT func() FROM t";', // 6
+    "const other = 'CALL thing()';", // 7
+    'export function real(a: number) {', // 8
+    '  return helper(a) + util.format(a);', // 9
+    '}', // 10
+  ].join('\n');
+
+  const parsed = CodeParser.parseFile('src/queries.ts', src)!;
+  const names = parsed.calls.map((c) => c.calleeName);
+
+  for (const keyword of ['MATCH', 'MERGE', 'CREATE', 'RETURN', 'count', 'SELECT', 'func', 'CALL', 'thing']) {
+    assert.ok(!names.includes(keyword), `"${keyword}" from a string literal must not be a call`);
+  }
+
+  // Real calls on code lines are still found.
+  assert.ok(names.includes('helper'), 'helper(a) must be extracted');
+  assert.ok(names.includes('format'), 'util.format(a) must be extracted');
+});
+
 test('parser indexes declarations whose parameters wrap across lines', () => {
   // Regression: the declaration regexes required the whole `(...)` on one line, so
   // every wrapped signature was invisible to the graph — no symbol, hence no

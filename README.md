@@ -613,7 +613,9 @@ Runs:
 - Graph integrity: multi-line signatures are indexed, relative imports produce real
   `:IMPORTS` edges (and therefore `TESTS_FOR` / affected-test links, including
   imports of compiled `lib/` output that map back to `src/`), declaration
-  `endLine` covers the whole body, and Python class scope does not leak
+  `endLine` covers the whole body even when the header contains braces, call
+  extraction ignores text inside strings and template literals, and Python class
+  scope does not leak
 - Daemon isolation: a second workspace falls back to a free port instead of dying
   with `EADDRINUSE`, a failed start never leaks the embedded FalkorDB process, a
   client refuses a daemon that serves a different workspace, and `autoStartDaemon`

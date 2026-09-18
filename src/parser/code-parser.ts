@@ -4,6 +4,12 @@ import { join, dirname, resolve, extname } from 'node:path';
 import type { ParsedCodeFile, CodeSymbol, CodeCall, FileImport, SymbolKind } from '../types.js';
 import { normalizeFunctionBody } from './clone-detector.js';
 
+/** `foo.bar(` / `baz(` / `Type::method(` — one regex reused by every parser. */
+const CALL_PATTERN = /(?:(\w+)\.)?(\w+)\s*\(/g;
+
+/** `foo.bar(` / `baz(` / `Type::method(` for Rust paths. */
+const CALL_PATTERN_RUST = /(?:(\w+)(?:::|\.))?(\w+)\s*\(/g;
+
 export class CodeParser {
   /**
    * Determine language from file extension
@@ -121,6 +127,75 @@ export class CodeParser {
   }
 
   /**
+   * Blank out string and template-literal contents on one line.
+   *
+   * Call extraction used to run over raw source, so text inside query strings was
+   * treated as code: a Cypher query containing `MATCH (s:Symbol)` produced a
+   * "call" to `MATCH`, and this repository accumulated 600+ such phantom call
+   * edges — enough to dominate `explore`'s hub-symbol ranking and pollute caller,
+   * callee and blast-radius results with keywords.
+   *
+   * Interpolations inside a template literal are dropped along with the literal.
+   * That under-reports calls written inside `${...}`, which is a far smaller cost
+   * than inventing hundreds of edges to `MATCH`.
+   *
+   * @param line - the raw source line.
+   * @param inTemplate - whether a multi-line template literal is already open.
+   * @returns the code-only text, and the template-literal state after this line.
+   */
+  private static stripStringLiterals(
+    line: string,
+    inTemplate: boolean
+  ): { code: string; inTemplate: boolean } {
+    let code = '';
+    let i = 0;
+    let mode: 'none' | 'single' | 'double' | 'template' = inTemplate ? 'template' : 'none';
+
+    while (i < line.length) {
+      const ch = line[i];
+
+      if (mode === 'none') {
+        if (ch === '"') mode = 'double';
+        else if (ch === "'") mode = 'single';
+        else if (ch === '`') mode = 'template';
+        else code += ch;
+        i++;
+        continue;
+      }
+
+      // Inside a literal: consume it, but keep character offsets aligned.
+      if (ch === '\\') {
+        i += 2;
+        continue;
+      }
+      if (
+        (mode === 'double' && ch === '"') ||
+        (mode === 'single' && ch === "'") ||
+        (mode === 'template' && ch === '`')
+      ) {
+        mode = 'none';
+      }
+      i++;
+    }
+
+    // Only template literals span lines; a lone quote ends with its line.
+    return { code, inTemplate: mode === 'template' };
+  }
+
+  /**
+   * Trim a gathered declaration to just its signature.
+   *
+   * Cuts at the **last** `{` of the header, not the first: a default value
+   * (`options: DispatchOptions = {}`) or an object return type
+   * (`Promise<{ ok: boolean }>`) contains braces that are part of the signature,
+   * and splitting on the first one truncated the signature mid-parameter.
+   */
+  private static signatureFrom(text: string): string {
+    const brace = text.lastIndexOf('{');
+    return (brace >= 0 ? text.slice(0, brace) : text).trim();
+  }
+
+  /**
    * Join a declaration's lines up to and including the line that closes its
    * parameter list.
    *
@@ -159,8 +234,12 @@ export class CodeParser {
       }
       parts.push(raw.trim());
       endIdx = i;
-      if (sawOpen && depth <= 0) break;
-      if (!sawOpen && i > startIdx) break;
+
+      // Stop as soon as the parameter list balances. When the line has no `(` at
+      // all (a brace-only declaration such as `class Foo {`), the header is that
+      // single line — continuing would swallow the first line of the body.
+      if (!sawOpen) break;
+      if (depth <= 0) break;
     }
 
     return { text: parts.join(' '), endIdx };
@@ -195,11 +274,16 @@ export class CodeParser {
     let classBraceDepth = 0;
     let currentDoc: string[] = [];
     let inDoc = false;
+    /** Tracks an open multi-line template literal across iterations. */
+    let inTemplate = false;
 
     for (let i = 0; i < lines.length; i++) {
       const lineNum = i + 1;
       const line = lines[i];
       const trimmed = line.trim();
+      const stripped = CodeParser.stripStringLiterals(line, inTemplate);
+      inTemplate = stripped.inTemplate;
+      const codeOnly = stripped.code;
 
       // Collect docstring
       if (trimmed.startsWith('/**')) {
@@ -268,7 +352,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum, // will be updated if end found
-          signature: trimmed.split('{')[0].trim(),
+          signature: CodeParser.signatureFrom(classHeader),
           docstring,
           isExported: trimmed.startsWith('export'),
         });
@@ -300,7 +384,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: trimmed.split('{')[0].trim(),
+          signature: CodeParser.signatureFrom(ifaceHeader),
           docstring,
           isExported: trimmed.startsWith('export'),
         });
@@ -349,7 +433,7 @@ export class CodeParser {
             file,
             startLine: lineNum,
             endLine: lineNum,
-            signature: signatureText.split('{')[0].trim(),
+            signature: CodeParser.signatureFrom(signatureText),
             docstring,
             visibility: vis,
           });
@@ -384,7 +468,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: signatureText.split('{')[0].trim(),
+          signature: CodeParser.signatureFrom(signatureText),
           docstring,
           isExported: trimmed.startsWith('export'),
         });
@@ -415,8 +499,9 @@ export class CodeParser {
         }
       }
 
-      // Call extraction: foo.bar(...) or baz(...)
-      const callMatches = line.matchAll(/(?:(\w+)\.)?(\w+)\s*\(/g);
+      // Call extraction: foo.bar(...) or baz(...). Runs on the string-stripped
+      // line so query text (SQL, Cypher) cannot masquerade as calls.
+      const callMatches = codeOnly.matchAll(CALL_PATTERN);
       for (const m of callMatches) {
         const obj = m[1];
         const fn = m[2];
@@ -456,11 +541,16 @@ export class CodeParser {
   ): void {
     let currentClass: string | null = null;
     let currentDoc: string[] = [];
+    /** Tracks an open multi-line string literal across iterations. */
+    let inTemplate = false;
 
     for (let i = 0; i < lines.length; i++) {
       const lineNum = i + 1;
       const line = lines[i];
       const trimmed = line.trim();
+      const stripped = CodeParser.stripStringLiterals(line, inTemplate);
+      inTemplate = stripped.inTemplate;
+      const codeOnly = stripped.code;
 
       // Reset currentClass if an unindented, non-comment, non-empty statement appears
       if (currentClass && trimmed.length > 0 && !trimmed.startsWith('#')) {
@@ -530,8 +620,8 @@ export class CodeParser {
         continue;
       }
 
-      // Calls: bar(...)
-      const callMatches = line.matchAll(/(?:(\w+)\.)?(\w+)\s*\(/g);
+      // Calls: bar(...). String-stripped so query text cannot fake a call.
+      const callMatches = codeOnly.matchAll(CALL_PATTERN);
       for (const m of callMatches) {
         const obj = m[1];
         const fn = m[2];
@@ -558,12 +648,17 @@ export class CodeParser {
     lines: string[],
     symbols: CodeSymbol[],
     calls: CodeCall[],
-    imports: FileImport[]
+        imports: FileImport[]
   ): void {
+    let inTemplate = false;
+
     for (let i = 0; i < lines.length; i++) {
       const lineNum = i + 1;
       const line = lines[i];
       const trimmed = line.trim();
+      const stripped = CodeParser.stripStringLiterals(line, inTemplate);
+      inTemplate = stripped.inTemplate;
+      const codeOnly = stripped.code;
 
       // Struct/Interface: type Foo struct/interface
       const typeMatch = trimmed.match(/^type\s+(\w+)\s+(struct|interface)/);
@@ -578,7 +673,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: trimmed,
+          signature: CodeParser.signatureFrom(trimmed),
           isExported: name[0] === name[0].toUpperCase(),
         });
         continue;
@@ -599,14 +694,14 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: signatureText,
+          signature: CodeParser.signatureFrom(signatureText),
           isExported: name[0] === name[0].toUpperCase(),
         });
         continue;
       }
 
-      // Calls:
-      const callMatches = line.matchAll(/(?:(\w+)\.)?(\w+)\s*\(/g);
+      // Calls. String-stripped so query text cannot fake a call.
+      const callMatches = codeOnly.matchAll(CALL_PATTERN);
       for (const m of callMatches) {
         const obj = m[1];
         const fn = m[2];
@@ -636,11 +731,15 @@ export class CodeParser {
     imports: FileImport[]
   ): void {
     let currentImpl: string | null = null;
+    let inTemplate = false;
 
     for (let i = 0; i < lines.length; i++) {
       const lineNum = i + 1;
       const line = lines[i];
       const trimmed = line.trim();
+      const stripped = CodeParser.stripStringLiterals(line, inTemplate);
+      inTemplate = stripped.inTemplate;
+      const codeOnly = stripped.code;
 
       // struct or enum: [pub] struct/enum Foo
       const structMatch = trimmed.match(/^(?:pub(?:\([^)]+\))?\s+)?(struct|enum|trait)\s+(\w+)/);
@@ -655,7 +754,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: trimmed.split('{')[0].trim(),
+          signature: CodeParser.signatureFrom(trimmed),
           isExported: trimmed.startsWith('pub'),
         });
         continue;
@@ -682,7 +781,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: signatureText.split('{')[0].trim(),
+          signature: CodeParser.signatureFrom(signatureText),
           isExported: trimmed.startsWith('pub'),
         });
         continue;
@@ -692,8 +791,8 @@ export class CodeParser {
         currentImpl = null;
       }
 
-      // Calls:
-      const callMatches = line.matchAll(/(?:(\w+)(?:::|\.))?(\w+)\s*\(/g);
+      // Calls. String-stripped so query text cannot fake a call.
+      const callMatches = codeOnly.matchAll(CALL_PATTERN_RUST);
       for (const m of callMatches) {
         const obj = m[1];
         const fn = m[2];
@@ -738,7 +837,7 @@ export class CodeParser {
           file,
           startLine: lineNum,
           endLine: lineNum,
-          signature: trimmed.split('{')[0].trim(),
+          signature: CodeParser.signatureFrom(trimmed),
         });
       }
     }
@@ -882,23 +981,60 @@ export class CodeParser {
         sym.endLine = Math.max(sym.startLine, endLine);
       } else {
         // Brace-based languages: TS, JS, Go, Rust, Java, C, C++
+        //
+        // Counting braces from the declaration's first line is wrong: braces can
+        // appear inside the parameter list (a default `= {}`, a destructured
+        // argument) and inside the return type (`Promise<{ a: number }>`). Those
+        // balanced braces closed the count immediately, so a 380-line function
+        // was recorded as ending on its own signature line.
+        //
+        // The body's opening brace is therefore located explicitly: the last `{`
+        // on the line that closes the parameter list (skipping a `{...}` return
+        // type that precedes it), or the first `{` on a nearby following line when
+        // the header ends without one.
+        const headerEndIdx = CodeParser.gatherParens(lines, startIdx).endIdx;
+
+        let bodyLine = -1;
+        let bodyCol = -1;
+
+        const closesOnLine = (lines[headerEndIdx] ?? '').lastIndexOf('{');
+        if (closesOnLine >= 0) {
+          bodyLine = headerEndIdx;
+          bodyCol = closesOnLine;
+        } else {
+          for (let i = headerEndIdx + 1; i < lines.length && i <= headerEndIdx + 3; i++) {
+            const col = (lines[i] ?? '').indexOf('{');
+            if (col >= 0) {
+              bodyLine = i;
+              bodyCol = col;
+              break;
+            }
+          }
+        }
+
+        if (bodyLine < 0) {
+          // No body (a declaration without braces): the signature line is all there is.
+          sym.endLine = Math.max(sym.startLine, headerEndIdx + 1);
+          continue;
+        }
+
         let openBraces = 0;
-        let foundOpen = false;
-        let endLine = sym.startLine;
+        let endLine = Math.max(sym.startLine, bodyLine + 1);
 
-        for (let i = startIdx; i < lines.length; i++) {
-          const l = lines[i];
-          const opens = (l.match(/{/g) || []).length;
-          const closes = (l.match(/}/g) || []).length;
+        for (let i = bodyLine; i < lines.length; i++) {
+          const l = lines[i] ?? '';
+          // Start counting at the body brace, ignoring anything before it.
+          const from = i === bodyLine ? bodyCol : 0;
+          const slice = l.slice(from);
 
-          if (opens > 0) foundOpen = true;
-          openBraces += opens - closes;
+          openBraces += (slice.match(/{/g) || []).length - (slice.match(/}/g) || []).length;
 
-          if (foundOpen && openBraces <= 0) {
+          if (openBraces <= 0) {
             endLine = i + 1;
             break;
           }
         }
+
         sym.endLine = Math.max(sym.startLine, endLine);
       }
     }

@@ -13,6 +13,33 @@ export declare class CodeParser {
      */
     static parseFile(filePath: string, content?: string): ParsedCodeFile | null;
     /**
+     * Blank out string and template-literal contents on one line.
+     *
+     * Call extraction used to run over raw source, so text inside query strings was
+     * treated as code: a Cypher query containing `MATCH (s:Symbol)` produced a
+     * "call" to `MATCH`, and this repository accumulated 600+ such phantom call
+     * edges — enough to dominate `explore`'s hub-symbol ranking and pollute caller,
+     * callee and blast-radius results with keywords.
+     *
+     * Interpolations inside a template literal are dropped along with the literal.
+     * That under-reports calls written inside `${...}`, which is a far smaller cost
+     * than inventing hundreds of edges to `MATCH`.
+     *
+     * @param line - the raw source line.
+     * @param inTemplate - whether a multi-line template literal is already open.
+     * @returns the code-only text, and the template-literal state after this line.
+     */
+    private static stripStringLiterals;
+    /**
+     * Trim a gathered declaration to just its signature.
+     *
+     * Cuts at the **last** `{` of the header, not the first: a default value
+     * (`options: DispatchOptions = {}`) or an object return type
+     * (`Promise<{ ok: boolean }>`) contains braces that are part of the signature,
+     * and splitting on the first one truncated the signature mid-parameter.
+     */
+    private static signatureFrom;
+    /**
      * Join a declaration's lines up to and including the line that closes its
      * parameter list.
      *
