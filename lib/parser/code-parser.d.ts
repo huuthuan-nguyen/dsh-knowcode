@@ -31,6 +31,22 @@ export declare class CodeParser {
      */
     private static stripStringLiterals;
     /**
+     * The part of a declaration line that follows its header.
+     *
+     * A single-line declaration — `export function f() { return g(); }` — used to have
+     * its calls skipped entirely, because the declaration branch consumed the line. The
+     * header is stripped so the declaration's own name is not then read as a call to
+     * itself.
+     */
+    private static codeAfterHeader;
+    /**
+     * Record every call-looking invocation in `text`.
+     *
+     * Shared by the whole-line pass and by declarations, which must also scan their own
+     * line: a call written on the same line as the enclosing declaration is still a call.
+     */
+    private static collectCalls;
+    /**
      * Whether a gathered declaration is genuinely `… = (params) => …`.
      *
      * The arrow pattern previously accepted any `const NAME = (` whose balanced

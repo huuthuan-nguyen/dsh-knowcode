@@ -175,6 +175,8 @@ export interface PortingContractResult {
   exported: boolean;
   dependencies: {
     importedTypes: string[];
+    /** Superclasses and implemented interfaces, which a port must carry over too. */
+    supertypes?: Array<{ name: string; external: boolean }>;
     callees: Array<{ name: string; qname?: string; file?: string }>;
   };
   typesAndMembers: Array<{

@@ -257,6 +257,52 @@ export class CodeParser {
   }
 
   /**
+   * The part of a declaration line that follows its header.
+   *
+   * A single-line declaration — `export function f() { return g(); }` — used to have
+   * its calls skipped entirely, because the declaration branch consumed the line. The
+   * header is stripped so the declaration's own name is not then read as a call to
+   * itself.
+   */
+  private static codeAfterHeader(code: string): string {
+    const brace = code.indexOf('{');
+    if (brace >= 0) return code.slice(brace);
+    const arrow = code.indexOf('=>');
+    if (arrow >= 0) return code.slice(arrow + 2);
+    return '';
+  }
+
+  /**
+   * Record every call-looking invocation in `text`.
+   *
+   * Shared by the whole-line pass and by declarations, which must also scan their own
+   * line: a call written on the same line as the enclosing declaration is still a call.
+   */
+  private static collectCalls(
+    text: string,
+    callerId: string,
+    file: string,
+    lineNum: number,
+    calls: CodeCall[]
+  ): void {
+    if (text.length === 0) return;
+
+    for (const m of text.matchAll(CALL_PATTERN)) {
+      const obj = m[1];
+      const fn = m[2];
+      if (NON_DECLARATION_KEYWORDS.has(fn)) continue;
+      if (fn === 'require' || fn === 'import') continue;
+      calls.push({
+        callerId,
+        calleeName: fn,
+        calleeQName: obj ? `${obj}.${fn}` : fn,
+        file,
+        line: lineNum,
+      });
+    }
+  }
+
+  /**
    * Whether a gathered declaration is genuinely `… = (params) => …`.
    *
    * The arrow pattern previously accepted any `const NAME = (` whose balanced
@@ -680,6 +726,13 @@ export class CodeParser {
             visibility: vis,
           });
           currentDoc = [];
+          CodeParser.collectCalls(
+            CodeParser.codeAfterHeader(codeOnly),
+            `${file}:${qname}:${lineNum}`,
+            file,
+            lineNum,
+            calls
+          );
         }
 
         // Depth must be tracked on every line, not only at the class body level,
@@ -698,6 +751,8 @@ export class CodeParser {
           }
         }
 
+        // The line already contributed its calls above; scanning it again in the
+        // whole-line pass would record the declaration's own name as a self-call.
         if (methodMatch) continue;
       }
 
@@ -718,6 +773,13 @@ export class CodeParser {
           docstring,
           isExported: trimmed.startsWith('export'),
         });
+        CodeParser.collectCalls(
+          CodeParser.codeAfterHeader(codeOnly),
+          `${file}:${name}:${lineNum}`,
+          file,
+          lineNum,
+          calls
+        );
         currentDoc = [];
         continue;
       }
@@ -740,32 +802,27 @@ export class CodeParser {
             docstring,
             isExported: trimmed.startsWith('export'),
           });
+          CodeParser.collectCalls(
+            CodeParser.codeAfterHeader(codeOnly),
+            `${file}:${name}:${lineNum}`,
+            file,
+            lineNum,
+            calls
+          );
           currentDoc = [];
           continue;
         }
       }
 
-      // Call extraction: foo.bar(...) or baz(...). Runs on the string-stripped
-      // line so query text (SQL, Cypher) cannot masquerade as calls.
-      const callMatches = codeOnly.matchAll(CALL_PATTERN);
-      for (const m of callMatches) {
-        const obj = m[1];
-        const fn = m[2];
-        // Ignore keywords
-        if (['if', 'for', 'while', 'switch', 'catch', 'import', 'require', 'return'].includes(fn)) {
-          continue;
-        }
-        // Find current enclosing symbol
-        const enclosing = symbols[symbols.length - 1];
-        if (enclosing) {
-          calls.push({
-            callerId: enclosing.id,
-            calleeName: fn,
-            calleeQName: obj ? `${obj}.${fn}` : fn,
-            file,
-            line: lineNum,
-          });
-        }
+      // Call extraction: foo.bar(...) or baz(...). Runs on the string-stripped line so
+      // query text, comments and fixture source cannot masquerade as calls.
+      //
+      // Skipped inside an interface: `area(): number;` declares a member, and reading
+      // it as a call produced a phantom `Shape -> area` edge that then showed up as a
+      // hub symbol and in call paths.
+      const enclosing = symbols[symbols.length - 1];
+      if (enclosing && enclosing.kind !== 'interface') {
+        CodeParser.collectCalls(codeOnly, enclosing.id, file, lineNum, calls);
       }
 
       if (currentDoc.length > 0 && !trimmed.startsWith('*')) {
