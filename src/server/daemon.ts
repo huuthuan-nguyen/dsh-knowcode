@@ -597,7 +597,7 @@ export class KnowCodeDaemon {
           // ORM models declared in code — a Mongoose schema in a `.ts` model file is
           // the most common "schema in source" there is — are collected here because
           // a code file returns before the schema branch below.
-          schemaCount += await this.ingestCodeSchema(relPath, content);
+          schemaCount += await this.ingestCodeSchema(relPath, content, parsedCode.imports);
           continue;
         }
 
@@ -654,7 +654,17 @@ export class KnowCodeDaemon {
    * Only textual model declarations are read — a Mongoose schema, or any future ORM
    * mapping. Nothing here opens or contacts a database.
    */
-  private async ingestCodeSchema(relPath: string, content: string): Promise<number> {
+  private async ingestCodeSchema(
+    relPath: string,
+    content: string,
+    imports: Array<{ importedPath: string }>
+  ): Promise<number> {
+    // Only a file that actually imports an ORM declares models. The parser scans file
+    // *content* with a regex, so without this it also matched a `new mongoose.Schema`
+    // written inside a test fixture string and invented a collection.
+    const usesOrm = imports.some((imp) => /mongoose|mongodb|sequelize|typeorm|prisma/i.test(imp.importedPath));
+    if (!usesOrm) return 0;
+
     const containers = StorageParser.parseMongoSchema(relPath, content);
     if (containers.length === 0) return 0;
 
@@ -846,7 +856,7 @@ export class KnowCodeDaemon {
         allImports.push(...parsedCode.imports);
         allCalls.push(...parsedCode.calls);
         allHeritage.push(...parsedCode.heritage);
-        await this.ingestCodeSchema(relPath, content);
+        await this.ingestCodeSchema(relPath, content, parsedCode.imports);
         sawCode = true;
         updated++;
         continue;
