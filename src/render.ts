@@ -259,7 +259,9 @@ export function renderUnusedSymbols(symbols: UnusedSymbolResult[]): string {
     '> _Review these internal symbols for deletion or dead code cleanup:_\n',
   ];
   for (const s of symbols) {
-    lines.push(`- **\`${s.qname}\`** (${s.kind}) at \`${s.file}:${s.startLine}\``);
+    lines.push(
+      `- **\`${s.qname}\`** (${s.kind}) at \`${s.file}:${s.startLine}\`${s.isExported ? ' — _exported, may be public API_' : ''}`
+    );
   }
   return lines.join('\n');
 }

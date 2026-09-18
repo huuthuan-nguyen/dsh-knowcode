@@ -116,7 +116,7 @@ export const knowCodeToolSpecs: readonly KnowCodeToolSpec[] = [
   {
     name: 'code_detect_circular_dependencies',
     description:
-      'Detect circular import or call dependency loops between files, packages, and modules using FalkorDB cycle traversal. Crucial when modularizing monolithic codebases, breaking tight coupling, or preparing for language ports (e.g. Go and Rust strictly forbid circular package imports).',
+      'Detect circular **import** dependency loops between files and modules using FalkorDB cycle traversal. Reports file paths, not individual symbols: a loop is listed once per rotation, so a single three-file cycle appears three times. Crucial when modularizing monolithic codebases, breaking tight coupling, or preparing for language ports (e.g. Go and Rust strictly forbid circular package imports).',
     parameters: emptySchema(),
     action: 'detect_cycles',
     aliases: ['code_detect_cycles'],
@@ -269,11 +269,17 @@ export const knowCodeToolSpecs: readonly KnowCodeToolSpec[] = [
   {
     name: 'code_find_unused_dead_symbols',
     description:
-      'Identify unreferenced internal/private symbols with 0 incoming calls in the codebase. Helps developers and agents safely eliminate dead code, ghost helper functions, and unused declarations during technical debt cleanups.',
+      'Identify unreferenced symbols with 0 incoming calls in the codebase, to eliminate dead code, ghost helpers and unused declarations. By default only internal/private symbols are reported, since an exported symbol may be public API; pass `include_exported` to widen it. Methods that satisfy an implemented interface or base-class member are excluded: they fulfil a contract even when nothing calls them by name.',
+    // Both are optional: the schema must not force the caller to pass them.
     parameters: objectSchema({
       limit: {
         type: 'number',
         description: 'Maximum number of dead symbol candidates to return (default: 50).',
+      },
+      include_exported: {
+        type: 'boolean',
+        description:
+          'Also report exported symbols with no incoming calls (default false). Useful in an application; in a library an export may be public API.',
       },
     }),
     action: 'unused_symbols',

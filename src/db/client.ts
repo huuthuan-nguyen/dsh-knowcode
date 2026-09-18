@@ -542,18 +542,34 @@ export class KnowCodeRepository {
       inDegree: row.inDegree,
     }));
 
-    // 3. Entry points (exported symbols with 0 callers)
+    // 3. Entry points (exported symbols with 0 callers).
+    //
+    // Interface members are exported and uncalled by construction, but a signature
+    // is not an entry point; listing them pushed the real ones out of the sample.
+    const interfaceMembersRes = await this.graph.query(
+      `MATCH (i:Symbol {kind: 'interface'})
+       MATCH (m:Symbol)
+       WHERE m.qname = i.name + '.' + m.name
+       RETURN DISTINCT m.qname AS qname`
+    );
+    const interfaceMembers = new Set<string>(
+      (interfaceMembersRes.data ?? []).map((r: any) => r.qname).filter(Boolean)
+    );
+
     const entryRes = await this.graph.query(
       `MATCH (s:Symbol {isExported: true})
        WHERE NOT (s)<-[:CALLS]-()
-       RETURN s.name AS name, s.file AS file, s.kind AS kind
-       LIMIT 15`
+       RETURN s.name AS name, s.qname AS qname, s.file AS file, s.kind AS kind
+       LIMIT 25`
     );
-    const entryPoints = (entryRes.data ?? []).map((row: any) => ({
-      name: row.name,
-      file: row.file,
-      kind: row.kind,
-    }));
+    const entryPoints = (entryRes.data ?? [])
+      .filter((row: any) => !interfaceMembers.has(row.qname))
+      .slice(0, 15)
+      .map((row: any) => ({
+        name: row.name,
+        file: row.file,
+        kind: row.kind,
+      }));
 
     return { files, topSymbols, entryPoints };
   }
@@ -1196,14 +1212,17 @@ export class KnowCodeRepository {
   /**
    * Find unused unexported symbols with 0 incoming calls in workspace
    */
-  public async findUnusedSymbols(limit: number = 50): Promise<UnusedSymbolResult[]> {
+  public async findUnusedSymbols(
+    limit: number = 50,
+    includeExported: boolean = false
+  ): Promise<UnusedSymbolResult[]> {
     // Constructors are excluded by name: a `new Foo()` invocation is attributed to
     // the class symbol, never to `Foo.constructor`, so every constructor would
     // otherwise be reported as dead code.
     const res = await this.graph.query(
       `MATCH (s:Symbol)
        WHERE NOT ()-[:CALLS]->(s)
-         AND s.isExported = false
+         AND ($includeExported OR s.isExported = false)
          AND NOT s.file CONTAINS 'test'
          AND NOT s.file CONTAINS 'spec'
          AND NOT s.name IN ['constructor', '__init__']
@@ -1211,18 +1230,36 @@ export class KnowCodeRepository {
               s.startLine AS startLine, s.isExported AS isExported
        ORDER BY s.file, s.startLine
        LIMIT $limit`,
-      { params: { limit } }
+      { params: { limit, includeExported } }
     );
 
-    return (res.data ?? []).map((r: any) => ({
-      name: r.name,
-      qname: r.qname ?? r.name,
-      kind: r.kind,
-      file: r.file,
-      startLine: r.startLine,
-      isExported: r.isExported ?? false,
-      reason: 'Unexported internal symbol with 0 incoming call invocations in workspace',
-    }));
+    // A method that satisfies an interface or base-class member is part of that
+    // contract even when nothing in the workspace calls it by name, so it is not
+    // dead code. Resolved through the supertype's own member symbols, which requires
+    // interface bodies to be indexed (`CodeParser` does this now).
+    const contractRes = await this.graph.query(
+      `MATCH (owner:Symbol)-[:IMPLEMENTS|EXTENDS]->(sup:Symbol)
+       MATCH (m:Symbol)
+       WHERE m.qname = sup.name + '.' + m.name
+       RETURN DISTINCT owner.name + '.' + m.name AS qname`
+    );
+    const contractMembers = new Set<string>(
+      (contractRes.data ?? []).map((r: any) => r.qname).filter(Boolean)
+    );
+
+    return (res.data ?? [])
+      .filter((r: any) => !contractMembers.has(r.qname ?? r.name))
+      .map((r: any) => ({
+        name: r.name,
+        qname: r.qname ?? r.name,
+        kind: r.kind,
+        file: r.file,
+        startLine: r.startLine,
+        isExported: r.isExported ?? false,
+        reason: r.isExported
+          ? 'Exported symbol with 0 incoming calls in this workspace (may still be public API)'
+          : 'Unexported internal symbol with 0 incoming call invocations in workspace',
+      }));
   }
 
   /**

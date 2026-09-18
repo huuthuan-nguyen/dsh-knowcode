@@ -304,7 +304,10 @@ export async function executeKnowCodeTool(
       }
 
       case 'unused_symbols': {
-        const data = await client.call('unused_symbols', { limit: args.limit });
+        const data = await client.call('unused_symbols', {
+          limit: args.limit,
+          includeExported: args.include_exported === true,
+        });
         return { kind: 'knowcode', action: rawAction, content: renderUnusedSymbols(data) };
       }
 

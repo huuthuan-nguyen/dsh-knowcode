@@ -854,7 +854,7 @@ export class KnowCodeDaemon {
           metrics
         );
       case 'unused_symbols':
-        return await this.repo.findUnusedSymbols(params.limit ?? 50);
+        return await this.repo.findUnusedSymbols(params.limit ?? 50, params.includeExported === true);
       case 'git_diff_impact':
         return await this.repo.analyzeGitDiffImpact(this.options.workdir, params.baseRef);
       case 'callers':

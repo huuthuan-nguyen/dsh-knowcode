@@ -207,7 +207,7 @@ export declare class KnowCodeRepository {
     /**
      * Find unused unexported symbols with 0 incoming calls in workspace
      */
-    findUnusedSymbols(limit?: number): Promise<UnusedSymbolResult[]>;
+    findUnusedSymbols(limit?: number, includeExported?: boolean): Promise<UnusedSymbolResult[]>;
     /**
      * Analyze semantic impact of current git diff
      */

@@ -127,7 +127,8 @@ test('every tool in the catalog works against a known fixture', async () => {
     const overview = await tool('code_get_architecture_overview', { limit: 10 });
     assert.match(overview, /Central Hub Symbols/);
     assert.match(overview, /`(alpha|beta|gamma)`/, 'a called symbol must rank as a hub');
-    assert.doesNotMatch(overview, /`area`/, 'interface members are not calls, so not hubs');
+    const hubSection = overview.split('Central Hub Symbols')[1] ?? '';
+    assert.doesNotMatch(hubSection, /`area`/, 'interface members are not calls, so not hubs');
 
     // 4 — symbol definition
     const definition = await tool('code_get_symbol_definition_and_signature', { name: 'alpha' });
