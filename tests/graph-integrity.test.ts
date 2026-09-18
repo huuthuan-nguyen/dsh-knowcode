@@ -509,6 +509,64 @@ test('autoStartDaemon brings up a daemon for an idle workspace', async () => {
   }
 });
 
+test('static methods are indexed, and regex braces do not hide the class body', () => {
+  // Two defects in one shape. `public static name(...)` did not match the member
+  // pattern, so every static method was invisible — and this codebase's utility
+  // classes are almost entirely static. Separately, a regex literal with unbalanced
+  // braces (`/[^{\n]*\{([\s\S]*?)\}/`) pushed the class-body depth to 2 for the
+  // rest of the file, hiding every method after it.
+  const parsed = CodeParser.parseFile(
+    'src/util.ts',
+    [
+      'export class Util {', // 1
+      '  public static alpha(a: string): number { return 1; }', // 2
+      '  private static async beta(): Promise<void> {}', // 3
+      '  static gamma(): void {}', // 4
+      '  private readonly re = /[^{\n]*\\{([\\s\\S]*?)\\}/g;', // 5
+      '  public static delta(): void {}', // 6
+      '  instance(): void {}', // 7
+      '}', // 8
+    ].join('\n')
+  )!;
+
+  const names = parsed.symbols.filter((s) => s.kind === 'method').map((s) => s.name);
+  for (const expected of ['alpha', 'beta', 'gamma', 'delta', 'instance']) {
+    assert.ok(names.includes(expected), `method ${expected} must be indexed, got ${JSON.stringify(names)}`);
+  }
+
+  // Visibility is taken from whichever modifier was used.
+  assert.strictEqual(parsed.symbols.find((s) => s.name === 'alpha')!.visibility, 'public');
+  assert.strictEqual(parsed.symbols.find((s) => s.name === 'beta')!.visibility, 'private');
+  assert.strictEqual(parsed.symbols.find((s) => s.name === 'delta')!.visibility, 'public');
+});
+
+test('interface members are indexed and never become calls', () => {
+  // Members give a generated trait its methods and let an implementing method be
+  // recognised as satisfying a contract, which keeps it out of dead-code reports.
+  const parsed = CodeParser.parseFile(
+    'src/shapes.ts',
+    [
+      'export interface Shape {', // 1
+      '  area(): number;', // 2
+      '  readonly name?: string;', // 3
+      '}', // 4
+      'export class Circle implements Shape {', // 5
+      '  area(): number { return 1; }', // 6
+      '}', // 7
+    ].join('\n')
+  )!;
+
+  const qnames = parsed.symbols.map((s) => s.qname).sort();
+  assert.deepStrictEqual(qnames, [
+    'Circle',
+    'Circle.area',
+    'Shape',
+    'Shape.area',
+    'Shape.name',
+  ]);
+  assert.deepStrictEqual(parsed.calls, [], 'a member signature is not a call');
+});
+
 // ---------------------------------------------------------------------------
 // Orphan prevention: stop daemons this process spawned
 // ---------------------------------------------------------------------------
