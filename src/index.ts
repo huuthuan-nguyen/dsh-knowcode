@@ -4,6 +4,7 @@ import { KnowCodeConfig, resolveConfig, type KnowCodeConfig as KnowCodeConfigSha
 import { KNOWCODE_SYSTEM_PROMPT } from './prompt.js';
 import { knowCodeToolSpecs } from './tools/tool-specs.js';
 import { executeKnowCodeTool, type ExecutionResult } from './tools/dispatcher.js';
+import { stopOwnedDaemons } from './server/auto-start.js';
 import type { TextContentBlock } from './tools/json-schema.js';
 import { asToolParameters } from './tools/json-schema.js';
 
@@ -106,4 +107,25 @@ export function apply(ctx: Context, rawConfig: KnowCodeConfigShape): void {
     order: 115,
     text: KNOWCODE_SYSTEM_PROMPT,
   });
+
+  // Stop the daemons this process spawned when the plugin is disposed.
+  //
+  // A daemon is spawned detached so it survives the tool call that needed it —
+  // which also means nothing else would ever stop it. Quitting the harness used
+  // to leave one running per project, each holding an embedded FalkorDB process,
+  // an HTTP server, a file watcher and a database file.
+  //
+  // DeepSeek Harness disposes the host fiber from its SIGINT/SIGTERM handler
+  // (`runProfile` in apps/cli), so this runs on Ctrl+C and on SIGTERM. A SIGKILL
+  // skips disposal and is the one case that still orphans a daemon.
+  //
+  // Only daemons recorded as ours are stopped: a server the user started by hand
+  // with `knowcode serve .`, or another harness's, is left untouched.
+  ctx.effect(() => () => {
+    if (!config.stopDaemonOnExit) return;
+    const stopped = stopOwnedDaemons();
+    if (stopped.length > 0) {
+      console.log(`[KnowCode] Stopped ${stopped.length} workspace daemon(s) on shutdown.`);
+    }
+  }, 'knowcode: stop owned daemons');
 }

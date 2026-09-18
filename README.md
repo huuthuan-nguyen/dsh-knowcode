@@ -516,6 +516,7 @@ dsh plugin add --profile web dsh-knowcode
 | `blastRadiusMaxDepth` | `3` | Default traversal depth for impact analysis (clamped to 1–10). |
 | `maxFileSize` | `1048576` | Largest file indexed, in bytes. |
 | `autoStartDaemon` | `true` | Start a daemon automatically when a tool runs in a workspace that has none, instead of replying with a "run `knowcode serve .`" notice. The daemon is spawned detached from this package's own CLI and its output is appended to `<dataDir>/serve.log`. Concurrent calls share one start attempt; the first call may wait a few hundred milliseconds. |
+| `stopDaemonOnExit` | `true` | Stop the daemons **this process** spawned when the harness exits. Detached daemons outlive a tool call, so without this, quitting DSH would leave one running per project — each holding an embedded FalkorDB process, an HTTP server, a file watcher and a database file. Cleanup runs from the plugin's disposal effect, which DSH triggers on `SIGINT` (Ctrl+C) and `SIGTERM`; `SIGKILL` bypasses disposal and is the one case that still orphans a daemon. Daemons you started yourself with `knowcode serve .` are never touched. |
 
 ---
 
@@ -618,8 +619,9 @@ Runs:
   scope does not leak
 - Daemon isolation: a second workspace falls back to a free port instead of dying
   with `EADDRINUSE`, a failed start never leaks the embedded FalkorDB process, a
-  client refuses a daemon that serves a different workspace, and `autoStartDaemon`
-  brings a daemon up on demand
+  client refuses a daemon that serves a different workspace, `autoStartDaemon`
+  brings a daemon up on demand, and shutdown stops only the daemons this process
+  spawned so no `knowcode serve` is orphaned
 
 ---
 

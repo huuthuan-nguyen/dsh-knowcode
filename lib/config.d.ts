@@ -24,6 +24,13 @@ export interface KnowCodeConfig {
     blastRadiusMaxDepth?: number;
     /** Auto-start daemon when DSH launches if not running (default: true). */
     autoStartDaemon?: boolean;
+    /**
+     * Stop daemons this process spawned when the harness exits (default: true).
+     *
+     * Daemons are detached so they outlive a tool call; without this, quitting the
+     * harness leaves one running per project.
+     */
+    stopDaemonOnExit?: boolean;
 }
 export interface ResolvedKnowCodeConfig {
     falkordbUrl: string;
@@ -32,6 +39,7 @@ export interface ResolvedKnowCodeConfig {
     maxFileSize: number;
     blastRadiusMaxDepth: number;
     autoStartDaemon: boolean;
+    stopDaemonOnExit: boolean;
 }
 /**
  * Normalize raw plugin config into fully-defaulted values.

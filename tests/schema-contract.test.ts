@@ -24,6 +24,8 @@ function registerAll(): { tools: any[]; sections: any[] } {
         sections.push(section);
       },
     },
+    // `apply` registers a disposal effect; the mock only needs to accept it.
+    effect: () => () => {},
   } as any;
 
   apply(ctx, {});
@@ -239,6 +241,7 @@ test('Config validates through Standard Schema v1 with defaults', () => {
     maxFileSize: 1048576,
     blastRadiusMaxDepth: 3,
     autoStartDaemon: true,
+    stopDaemonOnExit: true,
   });
 
   // Missing / non-object input still yields defaults.
@@ -266,6 +269,7 @@ test('Config coerces invalid values and preserves explicit ones', () => {
     maxFileSize: 2048,
     blastRadiusMaxDepth: 5,
     autoStartDaemon: false,
+    stopDaemonOnExit: false,
     falkordbUrl: 'redis://127.0.0.1:6379',
   }).value;
   assert.deepStrictEqual(good, {
@@ -274,11 +278,15 @@ test('Config coerces invalid values and preserves explicit ones', () => {
     maxFileSize: 2048,
     blastRadiusMaxDepth: 5,
     autoStartDaemon: false,
+    stopDaemonOnExit: false,
     falkordbUrl: 'redis://127.0.0.1:6379',
   });
 
   // `autoStartDaemon: false` is meaningful and must survive.
   assert.strictEqual(standard.validate({ autoStartDaemon: false }).value.autoStartDaemon, false);
+  // `stopDaemonOnExit: false` must be distinguishable from its default.
+  assert.strictEqual(standard.validate({ stopDaemonOnExit: false }).value.stopDaemonOnExit, false);
+  assert.strictEqual(standard.validate({}).value.stopDaemonOnExit, true);
   assert.strictEqual(standard.validate({ autoStartDaemon: true }).value.autoStartDaemon, true);
   assert.strictEqual(standard.validate({}).value.autoStartDaemon, true);
 });

@@ -9,6 +9,13 @@ import { FalkorDBManager } from '../lib/db/falkor-manager.js';
 import { initGraphSchema } from '../lib/db/schema.js';
 import { KnowCodeRepository } from '../lib/db/client.js';
 import { executeKnowCodeTool } from '../lib/tools/dispatcher.js';
+import {
+  ensureDaemonStarted,
+  ownedDaemonPids,
+  stopOwnedDaemons,
+  __resetOwnedDaemonsForTest,
+} from '../lib/server/auto-start.js';
+import { apply } from '../lib/index.js';
 
 const GRAPH_WS = resolve('/tmp/knowcode-graph-integrity');
 const IDENTITY_A = resolve('/tmp/knowcode-identity-a');
@@ -495,6 +502,90 @@ test('autoStartDaemon brings up a daemon for an idle workspace', async () => {
     await client.shutdown().catch(() => {});
     clean([GRAPH_WS]);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Orphan prevention: stop daemons this process spawned
+// ---------------------------------------------------------------------------
+
+test('stopOwnedDaemons stops only the daemons this process spawned', async () => {
+  // Daemons are detached so they outlive a tool call, which is exactly why
+  // anything not cleaned up on shutdown becomes a permanent orphan. Ownership must
+  // be exact: a daemon the user started by hand must survive.
+  const foreignWs = resolve('/tmp/knowcode-orphan-foreign');
+  writeWs(GRAPH_WS, { 'src/math.ts': 'export function alpha() { return 1; }\n' });
+  writeWs(foreignWs, { 'src/math.ts': 'export function beta() { return 2; }\n' });
+
+  // Ownership recorded by an earlier test must not leak into this one.
+  __resetOwnedDaemonsForTest();
+
+  const ownedPort = 48540;
+  const foreignPort = 48550;
+
+  const isAlive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // A daemon this process did NOT spawn (started in-process, as `knowcode serve`
+  // does). It lives in its own workspace so it cannot satisfy the auto-start probe
+  // for GRAPH_WS and mask the spawn under test.
+  const foreign = new KnowCodeDaemon({ workdir: foreignWs, port: foreignPort });
+  const foreignInfo = await foreign.start({ withWatcher: false });
+
+  try {
+    const spawned = await ensureDaemonStarted(GRAPH_WS, ownedPort, { readyTimeoutMs: 25_000 });
+    assert.strictEqual(spawned.started, true, 'auto-start must bring a daemon up');
+    assert.strictEqual(spawned.spawned, true, 'this process must be the one that spawned it');
+
+    const ownedPids = ownedDaemonPids();
+    assert.strictEqual(ownedPids.length, 1, 'exactly one daemon must be owned');
+    assert.ok(isAlive(ownedPids[0]), 'the owned daemon must be running');
+    assert.ok(
+      !ownedPids.includes(foreignInfo.pid),
+      'a daemon started outside ensureDaemonStarted must not be claimed'
+    );
+
+    const stopped = stopOwnedDaemons();
+    assert.deepStrictEqual(stopped, ownedPids, 'exactly the owned pids must be signalled');
+    assert.deepStrictEqual(ownedDaemonPids(), [], 'ownership is cleared after stopping');
+
+    // SIGTERM delivery is asynchronous.
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline && isAlive(ownedPids[0])) {
+      await new Promise((r) => setTimeout(r, 50));
+    }
+    assert.strictEqual(isAlive(ownedPids[0]), false, 'the owned daemon must be gone');
+    assert.strictEqual(isAlive(foreignInfo.pid), true, 'an unowned daemon must survive');
+  } finally {
+    await foreign.stop();
+    __resetOwnedDaemonsForTest();
+    clean([GRAPH_WS, foreignWs]);
+  }
+});
+
+test('the plugin registers a disposal effect that stops owned daemons', () => {
+  // DSH disposes the host fiber from its SIGINT/SIGTERM handler, so this effect is
+  // the only place an orphaned daemon can be stopped.
+  const effects: Array<() => void> = [];
+  const ctx = {
+    tools: { register: () => () => {} },
+    systemPrompt: { section: () => {} },
+    effect: (execute: () => () => void) => {
+      effects.push(execute());
+      return () => {};
+    },
+  } as any;
+
+  apply(ctx, {});
+  assert.strictEqual(effects.length, 1, 'exactly one disposal effect must be registered');
+
+  __resetOwnedDaemonsForTest();
+  assert.doesNotThrow(() => effects[0](), 'disposal must not throw with nothing owned');
 });
 
 // ---------------------------------------------------------------------------

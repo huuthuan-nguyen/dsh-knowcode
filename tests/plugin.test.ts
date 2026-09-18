@@ -10,6 +10,7 @@ test('Cordis plugin registration and tools verification', () => {
 
   const registeredTools: any[] = [];
   let registeredPrompt: any = null;
+  const disposers: Array<() => void> = [];
 
   // Mock Cordis Context services
   const ctx = {
@@ -22,6 +23,11 @@ test('Cordis plugin registration and tools verification', () => {
       section: (section: any) => {
         registeredPrompt = section;
       },
+    },
+    // `apply` registers a disposal effect that stops daemons this process spawned.
+    effect: (execute: () => () => void) => {
+      disposers.push(execute());
+      return () => {};
     },
   } as unknown as Context;
 

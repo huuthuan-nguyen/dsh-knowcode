@@ -24,6 +24,13 @@ export interface KnowCodeConfig {
   blastRadiusMaxDepth?: number;
   /** Auto-start daemon when DSH launches if not running (default: true). */
   autoStartDaemon?: boolean;
+  /**
+   * Stop daemons this process spawned when the harness exits (default: true).
+   *
+   * Daemons are detached so they outlive a tool call; without this, quitting the
+   * harness leaves one running per project.
+   */
+  stopDaemonOnExit?: boolean;
 }
 
 export interface ResolvedKnowCodeConfig {
@@ -33,6 +40,7 @@ export interface ResolvedKnowCodeConfig {
   maxFileSize: number;
   blastRadiusMaxDepth: number;
   autoStartDaemon: boolean;
+  stopDaemonOnExit: boolean;
 }
 
 const DEFAULT_DAEMON_PORT = 48123;
@@ -68,6 +76,7 @@ export function resolveConfig(raw: KnowCodeConfig | undefined | null): ResolvedK
     maxFileSize: positiveInt(source.maxFileSize, DEFAULT_MAX_FILE_SIZE),
     blastRadiusMaxDepth: positiveInt(source.blastRadiusMaxDepth, DEFAULT_BLAST_RADIUS_DEPTH),
     autoStartDaemon: source.autoStartDaemon !== false,
+    stopDaemonOnExit: source.stopDaemonOnExit !== false,
   };
 }
 
