@@ -498,12 +498,24 @@ In your profile's `cordis.patch.yml`:
         daemonPort: 48123
         dataDir: .knowcode
         blastRadiusMaxDepth: 3
+        autoStartDaemon: true
 ```
 
 ### Method 2: Via DSH CLI
 ```bash
 dsh plugin add --profile web dsh-knowcode
 ```
+
+### Configuration options
+
+| Option | Default | Description |
+|---|---|---|
+| `daemonPort` | `48123` | Preferred port for the workspace daemon. If it is taken, the daemon binds the next free port and records it in `<dataDir>/daemon.json`, so several workspaces can each run their own daemon. |
+| `dataDir` | `.knowcode` | Directory holding the embedded database and `daemon.json`. |
+| `falkordbUrl` | *(empty)* | Connect to an external FalkorDB (e.g. `redis://127.0.0.1:6379`) instead of the embedded engine. |
+| `blastRadiusMaxDepth` | `3` | Default traversal depth for impact analysis (clamped to 1–10). |
+| `maxFileSize` | `1048576` | Largest file indexed, in bytes. |
+| `autoStartDaemon` | `true` | Start a daemon automatically when a tool runs in a workspace that has none, instead of replying with a "run `knowcode serve .`" notice. The daemon is spawned detached from this package's own CLI and its output is appended to `<dataDir>/serve.log`. Concurrent calls share one start attempt; the first call may wait a few hundred milliseconds. |
 
 ---
 
@@ -599,11 +611,13 @@ Runs:
   `KNOWCODE_OUTPUT_SCHEMA` with the harness's own `validateJsonSchemaValue`, so an
   undeclared field can never reach the harness and fail with `INVALID_TOOL_OUTPUT`
 - Graph integrity: multi-line signatures are indexed, relative imports produce real
-  `:IMPORTS` edges (and therefore `TESTS_FOR` / affected-test links), declaration
+  `:IMPORTS` edges (and therefore `TESTS_FOR` / affected-test links, including
+  imports of compiled `lib/` output that map back to `src/`), declaration
   `endLine` covers the whole body, and Python class scope does not leak
 - Daemon isolation: a second workspace falls back to a free port instead of dying
-  with `EADDRINUSE`, a failed start never leaks the embedded FalkorDB process, and
-  a client refuses a daemon that serves a different workspace
+  with `EADDRINUSE`, a failed start never leaks the embedded FalkorDB process, a
+  client refuses a daemon that serves a different workspace, and `autoStartDaemon`
+  brings a daemon up on demand
 
 ---
 

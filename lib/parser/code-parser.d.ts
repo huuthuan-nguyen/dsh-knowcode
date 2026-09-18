@@ -53,13 +53,26 @@ export declare class CodeParser {
      * Generic fallback for C/C++/Java etc.
      */
     private static parseGeneric;
+    /** Directory names that hold compiled output rather than authored source. */
+    private static readonly BUILD_DIRS;
+    /** Directory names that hold authored source. */
+    private static readonly SOURCE_DIRS;
+    /** Recognised module extensions, longest first so `.tsx` beats `.ts`. */
+    private static readonly MODULE_EXTENSIONS;
     /**
      * Build every project-relative path a relative import could resolve to.
      *
-     * The parser has no filesystem access, so it cannot pick the correct one:
+     * The parser has no filesystem access, so it cannot pick the correct one, and
      * matching a single extension-less guess against the indexed `File` nodes
-     * silently produced zero `:IMPORTS` edges. Callers match the whole candidate
-     * list against real file nodes instead.
+     * silently produced zero `:IMPORTS` edges. Callers match this whole list
+     * against real file nodes, so extra candidates are harmless: a candidate that
+     * matches nothing simply creates no edge.
+     *
+     * Candidates also cross the build-output boundary. TypeScript projects compile
+     * `src/` to `lib/`, and their tests import the compiled output
+     * (`import { x } from '../lib/x.js'`), while only `src/` is indexed. Without
+     * the mapping those imports resolved to nothing, so no `TESTS_FOR` edge was
+     * created and affected-test discovery silently under-reported.
      */
     private static resolveRelativeCandidates;
     /**

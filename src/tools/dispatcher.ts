@@ -1,4 +1,5 @@
 import { KnowCodeRpcClient } from '../server/client-rpc.js';
+import { ensureDaemonStarted } from '../server/auto-start.js';
 import {
   renderExplore,
   renderBlastRadius,
@@ -38,11 +39,24 @@ export interface ExecutionResult {
   content: string;
 }
 
+export interface DispatchOptions {
+  /**
+   * Start a daemon for the workspace when none is running.
+   *
+   * Off by default so callers (tests, the CLI) stay predictable; the plugin
+   * enables it from the `autoStartDaemon` config option.
+   */
+  autoStartDaemon?: boolean;
+  /** How long to wait for an auto-started daemon to answer before giving up. */
+  autoStartTimeoutMs?: number;
+}
+
 export async function executeKnowCodeTool(
   rawAction: string,
   args: any,
   workdir: string,
-  daemonPort: number = 48123
+  daemonPort: number = 48123,
+  options: DispatchOptions = {}
 ): Promise<ExecutionResult> {
   const client = new KnowCodeRpcClient({ workdir, port: daemonPort });
 
@@ -171,7 +185,21 @@ export async function executeKnowCodeTool(
   };
 
   const action = actionMap[rawAction] ?? rawAction;
-  const isAlive = await client.isDaemonAlive();
+  let isAlive = await client.isDaemonAlive();
+  let autoStartNote = '';
+
+  // With `autoStartDaemon` on, bring the workspace's daemon up rather than
+  // answering every call with a "run knowcode serve" notice.
+  if (!isAlive && options.autoStartDaemon === true) {
+    const result = await ensureDaemonStarted(workdir, daemonPort, {
+      readyTimeoutMs: options.autoStartTimeoutMs,
+    });
+    if (result.started) {
+      isAlive = true;
+    } else {
+      autoStartNote = `\n> Auto-start was attempted but failed: ${result.reason ?? 'unknown reason'}.`;
+    }
+  }
 
   // If status is asked and daemon is not running, report offline status
   if (action === 'status' && !isAlive) {
@@ -180,7 +208,8 @@ export async function executeKnowCodeTool(
       action: rawAction,
       content:
         '### 📊 KnowCode Index & Daemon Status\n- **Daemon**: 🔴 Offline\n\n' +
-        '> **Actionable Hint**: Start the background indexer and file watcher with `knowcode serve .` or run `knowcode index .` once.',
+        '> **Actionable Hint**: Start the background indexer and file watcher with `knowcode serve .` or run `knowcode index .` once.' +
+        autoStartNote,
     };
   }
 
@@ -191,7 +220,8 @@ export async function executeKnowCodeTool(
       content:
         `[KnowCode Notice: Daemon is not currently active for '${workdir}'.]\n` +
         `To enable sub-millisecond graph queries, blast-radius analysis, and live file tracking, please run:\n` +
-        `\`knowcode serve\` in your terminal (or run \`knowcode index .\` for a one-time build).`,
+        `\`knowcode serve\` in your terminal (or run \`knowcode index .\` for a one-time build).` +
+        autoStartNote,
     };
   }
 

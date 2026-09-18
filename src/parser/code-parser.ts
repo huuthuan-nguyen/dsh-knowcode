@@ -744,13 +744,48 @@ export class CodeParser {
     }
   }
 
+  /** Directory names that hold compiled output rather than authored source. */
+  private static readonly BUILD_DIRS = [
+    'lib',
+    'dist',
+    'build',
+    'out',
+    'target',
+    'esm',
+    'cjs',
+    'compiled',
+  ];
+
+  /** Directory names that hold authored source. */
+  private static readonly SOURCE_DIRS = ['src', 'source', 'app', 'packages'];
+
+  /** Recognised module extensions, longest first so `.tsx` beats `.ts`. */
+  private static readonly MODULE_EXTENSIONS = [
+    '.tsx',
+    '.ts',
+    '.jsx',
+    '.js',
+    '.mjs',
+    '.cjs',
+    '.py',
+    '.go',
+    '.rs',
+  ];
+
   /**
    * Build every project-relative path a relative import could resolve to.
    *
-   * The parser has no filesystem access, so it cannot pick the correct one:
+   * The parser has no filesystem access, so it cannot pick the correct one, and
    * matching a single extension-less guess against the indexed `File` nodes
-   * silently produced zero `:IMPORTS` edges. Callers match the whole candidate
-   * list against real file nodes instead.
+   * silently produced zero `:IMPORTS` edges. Callers match this whole list
+   * against real file nodes, so extra candidates are harmless: a candidate that
+   * matches nothing simply creates no edge.
+   *
+   * Candidates also cross the build-output boundary. TypeScript projects compile
+   * `src/` to `lib/`, and their tests import the compiled output
+   * (`import { x } from '../lib/x.js'`), while only `src/` is indexed. Without
+   * the mapping those imports resolved to nothing, so no `TESTS_FOR` edge was
+   * created and affected-test discovery silently under-reported.
    */
   private static resolveRelativeCandidates(currentFile: string, importPath: string): string[] {
     if (!importPath.startsWith('.')) return [];
@@ -758,13 +793,52 @@ export class CodeParser {
     const dir = dirname(currentFile);
     const base = join(dir, importPath).replace(/\\/g, '/').replace(/\/+$/, '');
 
-    const extensions = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.go', '.rs'];
-    const candidates = [base];
-    for (const ext of extensions) candidates.push(`${base}${ext}`);
-    for (const ext of extensions) candidates.push(`${base}/index${ext}`);
-    candidates.push(`${base}/__init__.py`);
+    const seen = new Set<string>();
+    const expanded = new Set<string>();
+    const out: string[] = [];
 
-    return Array.from(new Set(candidates));
+    /** Add one literal path plus every extension/index variant of its stem. */
+    const addPath = (raw: string) => {
+      if (raw.length === 0) return;
+
+      if (!seen.has(raw)) {
+        seen.add(raw);
+        out.push(raw);
+      }
+
+      // Always expand the extension-less stem, even when `raw` has no extension:
+      // `./b` must still offer `b.ts`, `b/index.ts` and so on.
+      const stem = raw.replace(/\.(tsx|ts|jsx|js|mjs|cjs|py|go|rs)$/, '');
+      if (expanded.has(stem)) return;
+      expanded.add(stem);
+
+      if (!seen.has(stem)) {
+        seen.add(stem);
+        out.push(stem);
+      }
+      for (const ext of CodeParser.MODULE_EXTENSIONS) out.push(`${stem}${ext}`);
+      for (const ext of CodeParser.MODULE_EXTENSIONS) out.push(`${stem}/index${ext}`);
+      out.push(`${stem}/__init__.py`);
+    };
+
+    addPath(base);
+
+    // Map build-output directories back onto source directories, segment by
+    // segment, so `lib/config.js` also offers `src/config.ts`.
+    const parts = base.split('/');
+    for (let i = 0; i < parts.length; i++) {
+      if (!CodeParser.BUILD_DIRS.includes(parts[i])) continue;
+      // Never rewrite the file name itself.
+      if (i === parts.length - 1) continue;
+
+      for (const sourceDir of CodeParser.SOURCE_DIRS) {
+        const mapped = [...parts];
+        mapped[i] = sourceDir;
+        addPath(mapped.join('/'));
+      }
+    }
+
+    return Array.from(new Set(out));
   }
 
   /**

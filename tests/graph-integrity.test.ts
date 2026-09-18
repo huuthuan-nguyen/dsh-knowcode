@@ -5,6 +5,7 @@ import { resolve, join } from 'node:path';
 import { KnowCodeDaemon } from '../lib/server/daemon.js';
 import { KnowCodeRpcClient } from '../lib/server/client-rpc.js';
 import { CodeParser } from '../lib/parser/code-parser.js';
+import { executeKnowCodeTool } from '../lib/tools/dispatcher.js';
 
 const GRAPH_WS = resolve('/tmp/knowcode-graph-integrity');
 const IDENTITY_A = resolve('/tmp/knowcode-identity-a');
@@ -197,6 +198,81 @@ test('relative imports produce :IMPORTS edges, externals stay external', async (
     assert.deepStrictEqual(tests, ['src/a.test.ts']);
   } finally {
     await daemon.stop();
+    clean([GRAPH_WS]);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Imports that cross the build-output boundary (tests import compiled `lib/`)
+// ---------------------------------------------------------------------------
+
+test('imports of compiled output link back to the source tree', async () => {
+  // TypeScript projects compile src/ -> lib/ and their tests import '../lib/x.js',
+  // while only src/ is indexed. Without the build->source mapping those imports
+  // resolved to nothing, so no TESTS_FOR edge existed and affected-test discovery
+  // silently under-reported.
+  writeWs(GRAPH_WS, {
+    'src/math.ts': 'export function alpha(a: number, b: number) { return a + b; }\n',
+    'tests/math.test.ts': 'import { alpha } from "../lib/math.js";\nalpha(1, 2);\n',
+  });
+
+  const port = 48480;
+  const daemon = new KnowCodeDaemon({ workdir: GRAPH_WS, port });
+
+  try {
+    await daemon.start();
+    await daemon.performFullIndex();
+    const client = new KnowCodeRpcClient({ workdir: GRAPH_WS, port });
+
+    const edges = await client.query(
+      'MATCH (a:File)-[:IMPORTS]->(b:File) RETURN a.path AS from, b.path AS to'
+    );
+    assert.deepStrictEqual(
+      (edges.data as any[]).map((r) => `${r.from}->${r.to}`),
+      ['tests/math.test.ts->src/math.ts'],
+      'an import of ../lib/math.js must link to src/math.ts'
+    );
+
+    const tests = await client.call('affected_tests', { files: ['src/math.ts'] });
+    assert.deepStrictEqual(tests, ['tests/math.test.ts']);
+  } finally {
+    await daemon.stop();
+    clean([GRAPH_WS]);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// autoStartDaemon
+// ---------------------------------------------------------------------------
+
+test('autoStartDaemon brings up a daemon for an idle workspace', async () => {
+  writeWs(GRAPH_WS, { 'src/math.ts': 'export function alpha() { return 1; }\n' });
+
+  const port = 48490;
+  const client = new KnowCodeRpcClient({ workdir: GRAPH_WS, port });
+
+  try {
+    // Without the option the workspace reports itself offline.
+    const offline = await executeKnowCodeTool('status', {}, GRAPH_WS, port);
+    assert.match(offline.content, /Offline/, 'a fresh workspace has no daemon');
+
+    // With it, a daemon is spawned from this package's own CLI and answers.
+    const online = await executeKnowCodeTool('status', {}, GRAPH_WS, port, {
+      autoStartDaemon: true,
+      autoStartTimeoutMs: 25_000,
+    });
+    assert.doesNotMatch(online.content, /Offline/, `expected an online daemon, got: ${online.content}`);
+    assert.strictEqual(await client.isDaemonAlive(), true);
+
+    // The daemon's own log is kept so a failed start stays diagnosable.
+    assert.ok(existsSync(join(GRAPH_WS, '.knowcode', 'serve.log')), 'serve.log must be written');
+
+    // Indexing works through the auto-started daemon.
+    const indexed = await client.triggerIndex();
+    assert.ok(indexed.filesIndexed >= 1);
+  } finally {
+    // The daemon runs detached, so shut it down explicitly.
+    await client.shutdown().catch(() => {});
     clean([GRAPH_WS]);
   }
 });

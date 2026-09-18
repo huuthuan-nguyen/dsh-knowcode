@@ -73,7 +73,9 @@ export function apply(ctx: Context, rawConfig: KnowCodeConfigShape): void {
         },
         execute: async (args: any, runCtx: ToolRunContext) => {
           const sessionCwd = runCtx.agent?.session.header.cwd ?? process.cwd();
-          return await executeKnowCodeTool(spec.action, args, sessionCwd, config.daemonPort);
+          return await executeKnowCodeTool(spec.action, args, sessionCwd, config.daemonPort, {
+            autoStartDaemon: config.autoStartDaemon,
+          });
         },
         // `TerminalCallView` accepts only { card, title, description?, cwd? }.
         presentCall: () => ({
