@@ -22,7 +22,7 @@ program
 
 program
   .command('index [dir]')
-  .description('Index codebase and documentation into FalkorDB graph')
+  .description('Index codebase and documentation into FalkorDB graph (optional: serve indexes on its own)')
   .option('-p, --port <number>', 'Daemon port', (v) => parseInt(v, 10))
   .option('-d, --data-dir <path>', 'Data directory', '.knowcode')
   .option('-t, --trace', 'Emit tgrep-style [trace] logs to stderr')

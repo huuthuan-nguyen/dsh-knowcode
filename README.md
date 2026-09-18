@@ -272,8 +272,32 @@ Every tool is engineered for **LLM Function Calling and Semantic Intent Matching
 >
 > Throughout this section, `knowcode …` can always be replaced by `./bin/knowcode.js …` when running from a clone.
 
+### Which command do I need?
+
+**`serve` indexes the workspace by itself — `index` is optional.** There is no need to index before serving.
+
+On startup, and before it announces readiness, `serve` reconciles the graph with the filesystem:
+
+| Workspace state | What `serve` does |
+|---|---|
+| Never indexed | Walks the workspace and indexes everything — `Index stale: N added, 0 changed, 0 deleted. Re-indexing...` |
+| Index already current | `Index is up-to-date (N files checked)` — **no file is read**, thanks to a modification-time fast path |
+| Files added, changed or deleted | Re-indexes only those files |
+| `--force-index` | Re-parses everything, ignoring the stale check |
+
+Both routes build the same graph, including the `TESTS_FOR` and `DOCUMENTS` links, so serving a fresh workspace and indexing one produce identical results.
+
+| You want to… | Use |
+|---|---|
+| Just use it | **`serve`** — or let the plugin's `autoStartDaemon` start one for you |
+| Index once in CI without leaving a process behind | **`index`** (it starts a daemon, indexes, and stops it) |
+| Pre-warm so the first tool call is not spent waiting | **`index`** then `serve` — `serve` reuses the result |
+| Rebuild a graph you suspect is stale or wrong | **`serve --force-index`** |
+
+> ⚠️ The stale check compares **file content hashes**, so it cannot tell that an existing graph was built by an older parser. After upgrading, use `--force-index` (or delete `<dataDir>/falkordb.rdb`) — otherwise the previous graph is trusted.
+
 ### 1. One-shot Indexing (`knowcode index`)
-Index a codebase and its documentation into the embedded FalkorDB database:
+Index a codebase and its documentation into the embedded FalkorDB database. **Not required if you are going to `serve`** — that indexes on its own:
 ```bash
 # Index current directory
 knowcode index .
@@ -283,7 +307,7 @@ knowcode index ./my-repo --data-dir .knowcode
 ```
 
 ### 2. Background Daemon with Live Watcher (`knowcode serve`)
-Starts the server daemon, loads embedded FalkorDB, watches the workspace for changes, and incrementally re-indexes files in real time:
+Starts the server daemon, loads embedded FalkorDB, **indexes the workspace if it is not already indexed**, watches for changes, and incrementally re-indexes files in real time. Running `index` first is unnecessary:
 ```bash
 knowcode serve .
 ```
