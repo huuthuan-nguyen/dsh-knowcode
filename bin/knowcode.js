@@ -44,6 +44,7 @@ program
   .option('-t, --trace', 'Emit tgrep-style [trace] logs to stderr')
   .option('-f, --force-index', 'Skip the stale check and always run a full re-index')
   .option('-m, --max-file-size <bytes>', 'Largest file to index, in bytes', (v) => parseInt(v, 10))
+  .option('-i, --idle-timeout <minutes>', 'Stop the daemon after N idle minutes (0 disables)', (v) => parseInt(v, 10), 0)
   .action(async (dir = '.', options) => {
     try {
       await runServeCommand(dir, options);

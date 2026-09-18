@@ -5,6 +5,15 @@ export interface AutoStartResult {
     reason?: string;
     /** Whether this call actually spawned a process (false if one was already up). */
     spawned?: boolean;
+    /** Workspace the daemon serves, for the start-up note. */
+    workdir?: string;
+    /** Files and symbols in the graph once indexing settled. */
+    filesIndexed?: number;
+    symbolsIndexed?: number;
+    /** How long the wait for indexing took, in milliseconds. */
+    indexMs?: number;
+    /** True when indexing was still running when the budget expired. */
+    indexingTimedOut?: boolean;
 }
 export interface AutoStartOptions {
     /** Total time to wait for the daemon to answer `/status`. */
@@ -13,6 +22,10 @@ export interface AutoStartOptions {
     pollIntervalMs?: number;
     /** Largest file the spawned daemon may read and index, in bytes. */
     maxFileSize?: number;
+    /** Stop the spawned daemon after this many idle milliseconds (0 disables). */
+    idleTimeoutMs?: number;
+    /** How long to wait for the initial index to settle before returning anyway. */
+    indexTimeoutMs?: number;
 }
 /** Pids this process owns, for diagnostics and tests. */
 export declare function ownedDaemonPids(): number[];

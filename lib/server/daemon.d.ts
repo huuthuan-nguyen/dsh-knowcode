@@ -1,4 +1,24 @@
 import { Tracer, type TraceSink } from './trace.js';
+/** Outcome of the startup reconcile. */
+export interface ReconcileSummary {
+    mode: 'forced' | 'stale' | 'up-to-date' | 'fallback';
+    checked?: number;
+    added?: number;
+    changed?: number;
+    deleted?: number;
+    filesIndexed: number;
+    symbolsIndexed: number;
+    timeMs: number;
+}
+/** Result of an indexing pass. */
+export interface IndexSummary {
+    filesIndexed: number;
+    symbolsIndexed: number;
+    docsIndexed: number;
+    /** Contract entities and storage containers ingested from repository schema files. */
+    schemaDefinitions?: number;
+    timeMs: number;
+}
 export interface DaemonOptions {
     workdir: string;
     port?: number;
@@ -11,6 +31,12 @@ export interface DaemonOptions {
      * but never consulted, so a multi-megabyte file was always read in full.
      */
     maxFileSize?: number;
+    /**
+     * Stop the daemon after this many milliseconds without activity. `0` disables it.
+     * A daemon is spawned per workspace on first use, so a long session that touches
+     * many workspaces would otherwise keep one running for each of them.
+     */
+    idleTimeoutMs?: number;
     onLog?: (msg: string) => void;
     /** Enable Microsoft `tgrep`-style `[trace]` output. */
     trace?: boolean;
@@ -25,6 +51,19 @@ export declare class KnowCodeDaemon {
     private repo;
     private watcher;
     private isIndexing;
+    /**
+     * The run in flight, so a second caller shares it instead of failing.
+     *
+     * `/index` used to answer 500 `Indexing already in progress.` when invoked while
+     * the daemon was still reconciling at startup, which surfaced to the agent as
+     * `[KnowCode Error: …]` from the `sync` tool.
+     */
+    private indexingPromise;
+    /** Last time the daemon did anything, for the idle timeout. */
+    private lastActivityAt;
+    private idleTimer;
+    /** Summary of the last startup reconcile, for callers that share an in-flight run. */
+    private lastReconcile;
     private lastIndexedAt;
     private tracer;
     /** Data directory of the running instance, for releasing the workspace guard. */
@@ -66,26 +105,44 @@ export declare class KnowCodeDaemon {
     }>;
     private startInner;
     stop(): Promise<void>;
+    /** Record that the daemon did something, resetting the idle timeout. */
+    private touch;
+    /**
+     * Start the idle timer when a budget is configured.
+     *
+     * A daemon is spawned per workspace on first use and otherwise lives until the
+     * harness exits, so a long session that touches many workspaces accumulates one
+     * daemon, watcher and embedded database each. With a budget, an unused workspace
+     * lets its daemon go.
+     */
+    private startIdleTimer;
+    /**
+     * Reconcile the graph with the filesystem at startup, as one reported unit.
+     *
+     * This is the sequence `serve` runs between binding its port and announcing
+     * readiness. It owns the indexing flag for the whole span, so `/status` can report
+     * `indexing` and a concurrent `sync` shares the run instead of starting a second
+     * reconcile — and so a client that has just started the daemon knows when the
+     * graph is safe to query.
+     *
+     * @param opts.forceIndex - skip the stale check and re-parse everything.
+     */
+    reconcileStartup(opts?: {
+        forceIndex?: boolean;
+    }): Promise<ReconcileSummary>;
     /**
      * Perform full indexing pass on the workspace
      */
-    performFullIndex(targetPath?: string): Promise<{
-        filesIndexed: number;
-        symbolsIndexed: number;
-        docsIndexed: number;
-        /** Contract entities and storage containers ingested from repository schema files. */
-        schemaDefinitions?: number;
-        timeMs: number;
-    }>;
+    performFullIndex(targetPath?: string): Promise<IndexSummary>;
     /**
-     * Ingest schema and DDL definitions held in a repository file.
+     * Serialize an indexing pass and keep the observable state consistent.
      *
-     * The graph is populated only from text that a developer committed — migrations,
-     * `.proto` contracts, Prisma schemas, OpenAPI documents, Elasticsearch mappings.
-     * A running database is never queried, and its files are rejected before any read.
-     *
-     * @returns how many definitions were ingested.
+     * `isIndexing` was previously set only here and in `performFullIndex`, so
+     * `staleCheck`/`reindexPaths` ran unreported: `/status` could not say a reconcile
+     * was in progress, and a `sync` arriving mid-reconcile started a second one.
      */
+    private runIndexing;
+    private performFullIndexUnlocked;
     /**
      * Ingest schema definitions declared inside a source file.
      *

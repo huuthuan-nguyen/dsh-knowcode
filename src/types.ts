@@ -130,6 +130,8 @@ export interface KnowCodeStats {
   totalSections: number;
   totalRules: number;
   lastIndexedAt?: string;
+  /** Whether an indexing pass is running right now. */
+  indexing?: boolean;
   languages: Record<string, number>;
 }
 

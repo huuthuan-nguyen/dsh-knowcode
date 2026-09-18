@@ -31,6 +31,15 @@ export interface KnowCodeConfig {
    * harness leaves one running per project.
    */
   stopDaemonOnExit?: boolean;
+  /**
+   * Stop a daemon after this many minutes without activity (default: 0, disabled).
+   *
+   * Daemons are spawned per workspace on first use, so a long session that touches
+   * many workspaces keeps one running for each. With a budget, an unused workspace
+   * lets its daemon go; restarting it is cheap because the database persists and the
+   * stale check skips unchanged files.
+   */
+  idleTimeoutMinutes?: number;
 }
 
 export interface ResolvedKnowCodeConfig {
@@ -41,6 +50,8 @@ export interface ResolvedKnowCodeConfig {
   blastRadiusMaxDepth: number;
   autoStartDaemon: boolean;
   stopDaemonOnExit: boolean;
+  /** Idle budget in milliseconds; `0` disables the idle timeout. */
+  idleTimeoutMs: number;
 }
 
 const DEFAULT_DAEMON_PORT = 48123;
@@ -66,6 +77,12 @@ function positiveInt(value: unknown, fallback: number): number {
  * Exported (and used by the Standard Schema validator below) so there is exactly
  * one place that decides defaults.
  */
+/** Minutes to milliseconds, treating anything invalid or negative as disabled. */
+function nonNegativeMinutes(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
+}
+
 export function resolveConfig(raw: KnowCodeConfig | undefined | null): ResolvedKnowCodeConfig {
   const source = (raw && typeof raw === 'object' ? raw : {}) as KnowCodeConfig;
   return {
@@ -77,6 +94,7 @@ export function resolveConfig(raw: KnowCodeConfig | undefined | null): ResolvedK
     blastRadiusMaxDepth: positiveInt(source.blastRadiusMaxDepth, DEFAULT_BLAST_RADIUS_DEPTH),
     autoStartDaemon: source.autoStartDaemon !== false,
     stopDaemonOnExit: source.stopDaemonOnExit !== false,
+    idleTimeoutMs: nonNegativeMinutes(source.idleTimeoutMinutes) * 60_000,
   };
 }
 

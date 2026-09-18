@@ -23,7 +23,19 @@ export interface DispatchOptions {
     autoStartDaemon?: boolean;
     /** How long to wait for an auto-started daemon to answer before giving up. */
     autoStartTimeoutMs?: number;
+    /** How long to wait for its initial index to settle before answering anyway. */
+    indexTimeoutMs?: number;
     /** Largest file an auto-started daemon may read and index, in bytes. */
     maxFileSize?: number;
+    /** Stop an auto-started daemon after this many idle milliseconds (0 disables). */
+    idleTimeoutMs?: number;
 }
+/**
+ * Run a tool and, when this call is the one that started the workspace daemon, prefix
+ * the result with a note saying so.
+ *
+ * Building an index is why the first call in a workspace is slower, and the agent has
+ * no other way to learn that — nor whether the counts it is about to read are
+ * complete. The note is attached to that single call only.
+ */
 export declare function executeKnowCodeTool(rawAction: string, args: any, workdir: string, daemonPort?: number, options?: DispatchOptions): Promise<ExecutionResult>;

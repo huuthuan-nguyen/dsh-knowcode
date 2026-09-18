@@ -77,6 +77,7 @@ export function apply(ctx: Context, rawConfig: KnowCodeConfigShape): void {
           return await executeKnowCodeTool(spec.action, args, sessionCwd, config.daemonPort, {
             autoStartDaemon: config.autoStartDaemon,
             maxFileSize: config.maxFileSize,
+            idleTimeoutMs: config.idleTimeoutMs,
           });
         },
         // `TerminalCallView` accepts only { card, title, description?, cwd? }.

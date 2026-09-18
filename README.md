@@ -516,6 +516,7 @@ dsh plugin add --profile web dsh-knowcode
 | `blastRadiusMaxDepth` | `3` | Default traversal depth for impact analysis (clamped to 1–10). |
 | `maxFileSize` | `1048576` | Largest file read and indexed, in bytes. Enforced from the file's size **before** it is read, in both the indexer and the file watcher. Set it with `knowcode serve . --max-file-size <bytes>` when running the CLI by hand. |
 | `autoStartDaemon` | `true` | Start a daemon automatically when a tool runs in a workspace that has none, instead of replying with a "run `knowcode serve .`" notice. The daemon is spawned detached from this package's own CLI and its output is appended to `<dataDir>/serve.log`. Concurrent calls share one start attempt; the first call may wait a few hundred milliseconds. |
+| `idleTimeoutMinutes` | `0` | Stop a daemon after this many minutes without activity. `0` disables it. Any client contact — a tool call, a watcher event — resets the budget. Restarting later is cheap: the database persists and the stale check skips unchanged files. Set it per run with `knowcode serve . --idle-timeout <minutes>`. |
 | `stopDaemonOnExit` | `true` | Stop the daemons **this process** spawned when the harness exits. Detached daemons outlive a tool call, so without this, quitting DSH would leave one running per project — each holding an embedded FalkorDB process, an HTTP server, a file watcher and a database file. Cleanup runs from the plugin's disposal effect, which DSH triggers on `SIGINT` (Ctrl+C) and `SIGTERM`; `SIGKILL` bypasses disposal and is the one case that still orphans a daemon. Daemons you started yourself with `knowcode serve .` are never touched. |
 
 ### Databases are never read
@@ -546,6 +547,16 @@ Storage knowledge is read only from text in the repository, routed by file type:
 | Elasticsearch mappings (`*mapping*.json`, `mappings.properties`) | `StorageContainer` (Elasticsearch) |
 
 JSON and YAML are discovered but accepted only when the file name looks like a schema, so lockfiles and CI configuration are never read. Each file's definitions are replaced on re-index, so a model deleted from a schema disappears from the graph, and a malformed schema is skipped rather than aborting the run.
+
+### Workspaces, watchers and resource use
+
+**Nothing runs until you use it.** The plugin registers its tools when DeepSeek Harness loads and starts no process at all; a daemon appears the first time a KnowCode tool runs in a given workspace.
+
+- **One daemon per workspace _you have used_.** Workspaces you have not touched hold no daemon, no watcher and no `.knowcode` directory. Four workspaces in a session, two of them used, means two daemons.
+- **Watch scope is the session's working directory, recursively.** Anything not in the ignored directories is watched, and the initial index covers the whole tree. Running the harness from a parent directory therefore watches every project beneath it — open it in the project itself when that matters.
+- **The first call in a workspace pays for the index.** It is reported on that call: `⚙️ KnowCode daemon auto-started for … — indexed N files, M symbols in T s`. That call waits for the index to settle, so the numbers it returns are complete; if the wait exceeds its budget (60s, or `indexTimeoutMs` for callers) the note says so instead.
+- **Idle costs almost nothing.** The watcher is event-driven on macOS (FSEvents) and only receives changes; the embedded database writes at most once every 60 seconds, and only after a change.
+- **Nothing is left behind.** Daemons the plugin started are stopped when the harness exits (see `stopDaemonOnExit`), and `idleTimeoutMinutes` lets an unused workspace stop sooner. `SIGKILL` skips that cleanup.
 
 ### One daemon per workspace
 
@@ -643,6 +654,10 @@ Runs:
 - Tool-schema contract: every tool validated against the harness's own
   `assertSupportedJsonSchema`, plus a guard asserting the compiled output has
   **zero runtime `@deepseek-ai/*` imports**
+- Auto-start contract: the first query in a workspace sees a settled index (verified
+  against a 300-file fixture, where a partial graph used to answer instead), the
+  starting call reports what it cost, and a concurrent `sync` shares the run rather
+  than failing
 - Tool-output contract: every return branch of every action validated against
   `KNOWCODE_OUTPUT_SCHEMA` with the harness's own `validateJsonSchemaValue`, so an
   undeclared field can never reach the harness and fail with `INVALID_TOOL_OUTPUT`
@@ -657,7 +672,8 @@ Runs:
   client refuses a daemon that serves a different workspace, a second daemon for
   one workspace is refused while a dead one's guard is reclaimed, `autoStartDaemon`
   brings a daemon up on demand, and shutdown stops only the daemons this process
-  spawned so no `knowcode serve` is orphaned
+  spawned so no `knowcode serve` is orphaned, and an idle budget lets an unused
+  workspace stop its daemon on its own
 - Index scope: databases, archives and binaries are rejected from the path alone
   (including SQLite `-wal`/`-shm`/`-journal` sidecars), and `maxFileSize` is
   enforced before any read instead of being a documented no-op

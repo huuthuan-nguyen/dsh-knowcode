@@ -81,6 +81,29 @@ export class KnowCodeRpcClient {
   }
 
   /**
+   * Wait until this workspace's daemon has finished indexing.
+   *
+   * A daemon starts answering `/status` as soon as its HTTP server binds, which is
+   * before it has reconciled the graph. A client that has just started one therefore
+   * needs to wait, or its first query runs against a partially built graph — measured
+   * at 120 of 300 files on a fresh workspace.
+   *
+   * @param timeoutMs - give up after this long.
+   * @returns the final status, or null when nothing answered or the budget expired.
+   */
+  public async waitUntilIndexed(timeoutMs = 60_000, pollMs = 250): Promise<KnowCodeStats | null> {
+    const deadline = Date.now() + timeoutMs;
+    let last: KnowCodeStats | null = null;
+
+    for (;;) {
+      last = await this.tryGetStatus(2_000);
+      if (last === null || last.indexing !== true) return last;
+      if (Date.now() >= deadline) return last;
+      await new Promise((r) => setTimeout(r, pollMs));
+    }
+  }
+
+  /**
    * Get stats from daemon
    */
   public async getStatus(): Promise<KnowCodeStats> {

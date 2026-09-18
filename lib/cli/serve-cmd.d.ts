@@ -4,4 +4,5 @@ export declare function runServeCommand(targetDir?: string, options?: {
     trace?: boolean;
     forceIndex?: boolean;
     maxFileSize?: number;
+    idleTimeout?: number;
 }): Promise<void>;

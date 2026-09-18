@@ -35,6 +35,18 @@ export declare class KnowCodeRpcClient {
     /** Whether this workspace records its own daemon port. */
     private hasOwnDaemonFile;
     /**
+     * Wait until this workspace's daemon has finished indexing.
+     *
+     * A daemon starts answering `/status` as soon as its HTTP server binds, which is
+     * before it has reconciled the graph. A client that has just started one therefore
+     * needs to wait, or its first query runs against a partially built graph — measured
+     * at 120 of 300 files on a fresh workspace.
+     *
+     * @param timeoutMs - give up after this long.
+     * @returns the final status, or null when nothing answered or the budget expired.
+     */
+    waitUntilIndexed(timeoutMs?: number, pollMs?: number): Promise<KnowCodeStats | null>;
+    /**
      * Get stats from daemon
      */
     getStatus(): Promise<KnowCodeStats>;

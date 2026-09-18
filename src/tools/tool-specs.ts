@@ -13,7 +13,7 @@ export const knowCodeToolSpecs: readonly KnowCodeToolSpec[] = [
   {
     name: 'knowcode_check_index_health_and_stats',
     description:
-      'Check the health of the FalkorDB graph index, total code files, symbols, call edges, documentation sections, architecture rules, and background daemon status. Run this once per session before starting complex refactoring or navigation tasks to verify index freshness.',
+      'Check the health of the FalkorDB graph index, total code files, symbols, call edges, documentation sections, architecture rules, and background daemon status. Reports whether an indexing pass is currently running, so a low file or symbol count can be recognised as work in progress rather than an empty workspace. Run this once per session before starting complex refactoring or navigation tasks to verify index freshness.',
     parameters: emptySchema(),
     action: 'status',
     aliases: ['knowcode_status'],
@@ -21,7 +21,7 @@ export const knowCodeToolSpecs: readonly KnowCodeToolSpec[] = [
   {
     name: 'knowcode_trigger_incremental_reindex',
     description:
-      'Trigger an on-demand incremental re-index of newly added or modified files across the workspace into the FalkorDB graph. Call this after editing or adding files if the background daemon is offline or after large batch code modifications to ensure graph accuracy.',
+      'Trigger an on-demand incremental re-index of newly added or modified files across the workspace into the FalkorDB graph. Call this after editing or adding files if the background daemon is offline or after large batch code modifications to ensure graph accuracy. If a pass is already running, this shares it and returns its result rather than failing.',
     parameters: emptySchema(),
     action: 'sync',
     aliases: ['knowcode_sync'],

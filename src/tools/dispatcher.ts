@@ -49,16 +49,43 @@ export interface DispatchOptions {
   autoStartDaemon?: boolean;
   /** How long to wait for an auto-started daemon to answer before giving up. */
   autoStartTimeoutMs?: number;
+  /** How long to wait for its initial index to settle before answering anyway. */
+  indexTimeoutMs?: number;
   /** Largest file an auto-started daemon may read and index, in bytes. */
   maxFileSize?: number;
+  /** Stop an auto-started daemon after this many idle milliseconds (0 disables). */
+  idleTimeoutMs?: number;
 }
 
+/**
+ * Run a tool and, when this call is the one that started the workspace daemon, prefix
+ * the result with a note saying so.
+ *
+ * Building an index is why the first call in a workspace is slower, and the agent has
+ * no other way to learn that — nor whether the counts it is about to read are
+ * complete. The note is attached to that single call only.
+ */
 export async function executeKnowCodeTool(
   rawAction: string,
   args: any,
   workdir: string,
   daemonPort: number = 48123,
   options: DispatchOptions = {}
+): Promise<ExecutionResult> {
+  const state: { startedNote: string } = { startedNote: '' };
+  const result = await executeKnowCodeToolCore(rawAction, args, workdir, daemonPort, options, state);
+
+  if (state.startedNote.length === 0) return result;
+  return { ...result, content: state.startedNote + result.content };
+}
+
+async function executeKnowCodeToolCore(
+  rawAction: string,
+  args: any,
+  workdir: string,
+  daemonPort: number = 48123,
+  options: DispatchOptions = {},
+  state: { startedNote: string }
 ): Promise<ExecutionResult> {
   const client = new KnowCodeRpcClient({ workdir, port: daemonPort });
 
@@ -195,10 +222,29 @@ export async function executeKnowCodeTool(
   if (!isAlive && options.autoStartDaemon === true) {
     const result = await ensureDaemonStarted(workdir, daemonPort, {
       readyTimeoutMs: options.autoStartTimeoutMs,
+      indexTimeoutMs: options.indexTimeoutMs,
       maxFileSize: options.maxFileSize,
+      idleTimeoutMs: options.idleTimeoutMs,
     });
     if (result.started) {
       isAlive = true;
+
+      // Say so, once, on the call that paid for it. The first tool call in a
+      // workspace is slower because it builds the index, and the agent otherwise has
+      // no way to know why — or whether the numbers it is about to read are complete.
+      const scope = result.workdir ?? workdir;
+      if (result.indexingTimedOut) {
+        state.startedNote =
+          `> ⚙️ KnowCode daemon auto-started for \`${scope}\` — indexing is still running, ` +
+          `so counts below may be incomplete. Re-run this tool in a moment for a settled view.\n\n`;
+      } else {
+        const files = result.filesIndexed ?? 0;
+        const symbols = result.symbolsIndexed ?? 0;
+        const secs = ((result.indexMs ?? 0) / 1000).toFixed(1);
+        state.startedNote =
+          `> ⚙️ KnowCode daemon auto-started for \`${scope}\` — indexed ${files} files, ` +
+          `${symbols} symbols in ${secs}s.\n\n`;
+      }
     } else {
       autoStartNote = `\n> Auto-start was attempted but failed: ${result.reason ?? 'unknown reason'}.`;
     }

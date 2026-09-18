@@ -11,6 +11,7 @@ export async function runServeCommand(
     trace?: boolean;
     forceIndex?: boolean;
     maxFileSize?: number;
+    idleTimeout?: number;
   } = {}
 ): Promise<void> {
   const workdir = resolve(targetDir);
@@ -21,6 +22,7 @@ export async function runServeCommand(
     port: options.port,
     dataDir: options.dataDir,
     maxFileSize: options.maxFileSize,
+    idleTimeoutMs: options.idleTimeout ? options.idleTimeout * 60_000 : 0,
     trace: tracing,
     onTrace: createTraceSink(tracing),
     onLog: (msg) => console.log(`[KnowCode] ${msg}`),
@@ -49,42 +51,18 @@ export async function runServeCommand(
 
   const tracer = daemon.getTracer();
 
-  // Wait for the watcher to actually deliver events before reconciling. A file
-  // created between the stale check and chokidar's initial scan completing would
-  // otherwise be missed by both.
-  const watcherReady = await daemon.waitForWatcherReady();
-  if (!watcherReady) {
-    tracer.line('watcher did not report ready; reconciling anyway');
-  }
+  // Wait for the watcher, then reconcile: both are owned by the daemon so it can
+  // report `indexing` on /status for the whole span. A client that has just started
+  // this daemon waits on that flag, which is what stops its first query from running
+  // against a half-built graph.
+  const summary = await daemon.reconcileStartup({ forceIndex: options.forceIndex });
 
-  if (options.forceIndex) {
-    tracer.line('index mode: forced full re-index (--force-index)');
-    console.log(`[KnowCode] Performing full index (forced)...`);
-    await daemon.performFullIndex();
-  } else {
-    // Reconcile against the filesystem instead of always re-parsing everything.
-    try {
-      const stale = await daemon.staleCheck();
-      const total = stale.added.length + stale.changed.length + stale.deleted.length;
-
-      if (total === 0) {
-        console.log(`[KnowCode] Index is up-to-date (${stale.checked} files checked).`);
-      } else {
-        console.log(
-          `[KnowCode] Index stale: ${stale.added.length} added, ${stale.changed.length} changed, ` +
-            `${stale.deleted.length} deleted. Re-indexing...`
-        );
-        await daemon.reindexPaths(
-          [...stale.added, ...stale.changed],
-          stale.deleted
-        );
-      }
-    } catch (err: any) {
-      // Never leave the graph unindexed because of a stale-check failure.
-      tracer.line(`stale check failed: ${err?.message ?? String(err)} — falling back to full index`);
-      console.log(`[KnowCode] Stale check failed; performing full index...`);
-      await daemon.performFullIndex();
-    }
+  if (summary.mode === 'forced') {
+    // performFullIndex already logged its own phase lines.
+  } else if (summary.mode === 'fallback') {
+    // The stale-check failure and fallback were logged by the daemon.
+  } else if (summary.mode === 'up-to-date') {
+    // Logged by the daemon.
   }
 
   console.log(`[KnowCode] Ready and watching for file changes. Press Ctrl+C to stop.`);

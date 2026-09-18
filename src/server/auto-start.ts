@@ -13,6 +13,15 @@ export interface AutoStartResult {
   reason?: string;
   /** Whether this call actually spawned a process (false if one was already up). */
   spawned?: boolean;
+  /** Workspace the daemon serves, for the start-up note. */
+  workdir?: string;
+  /** Files and symbols in the graph once indexing settled. */
+  filesIndexed?: number;
+  symbolsIndexed?: number;
+  /** How long the wait for indexing took, in milliseconds. */
+  indexMs?: number;
+  /** True when indexing was still running when the budget expired. */
+  indexingTimedOut?: boolean;
 }
 
 export interface AutoStartOptions {
@@ -22,10 +31,16 @@ export interface AutoStartOptions {
   pollIntervalMs?: number;
   /** Largest file the spawned daemon may read and index, in bytes. */
   maxFileSize?: number;
+  /** Stop the spawned daemon after this many idle milliseconds (0 disables). */
+  idleTimeoutMs?: number;
+  /** How long to wait for the initial index to settle before returning anyway. */
+  indexTimeoutMs?: number;
 }
 
 const DEFAULT_READY_TIMEOUT_MS = 20_000;
 const DEFAULT_POLL_INTERVAL_MS = 250;
+/** How long to wait for the initial index before answering with partial counts. */
+const DEFAULT_INDEX_TIMEOUT_MS = 60_000;
 
 /**
  * Concurrent tool calls in one turn must not each spawn a daemon for the same
@@ -186,6 +201,9 @@ async function runAutoStart(
     if (typeof options.maxFileSize === 'number' && options.maxFileSize > 0) {
       args.push('--max-file-size', String(options.maxFileSize));
     }
+    if (typeof options.idleTimeoutMs === 'number' && options.idleTimeoutMs > 0) {
+      args.push('--idle-timeout', String(Math.round(options.idleTimeoutMs / 60_000)));
+    }
 
     const child = spawn(process.execPath, args, {
       cwd: workdir,
@@ -217,7 +235,23 @@ async function runAutoStart(
 
     const deadline = Date.now() + readyTimeoutMs;
     while (Date.now() < deadline) {
-      if (await client.isDaemonAlive()) return { started: true, spawned: true };
+      if (await client.isDaemonAlive()) {
+        // The daemon answers as soon as its port is bound, which is before it has
+        // reconciled the graph. Waiting here is what stops the first tool call from
+        // querying a half-built index.
+        const waitNs = Date.now();
+        const status = await client.waitUntilIndexed(options.indexTimeoutMs ?? DEFAULT_INDEX_TIMEOUT_MS);
+
+        return {
+          started: true,
+          spawned: true,
+          workdir,
+          filesIndexed: status ? status.totalCodeFiles + status.totalDocFiles : undefined,
+          symbolsIndexed: status?.totalSymbols,
+          indexMs: Date.now() - waitNs,
+          indexingTimedOut: status?.indexing === true,
+        };
+      }
       if (spawnError) break;
       // The CLI can exit immediately — most often because another daemon already
       // holds the workspace guard. Waiting out the full budget would stall the tool

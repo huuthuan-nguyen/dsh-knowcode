@@ -1038,6 +1038,124 @@ test('a guard left by a dead daemon is reclaimed', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Auto-start: the first query must see a settled graph
+// ---------------------------------------------------------------------------
+
+test('the call that auto-starts a daemon reports it, and sees a settled index', async () => {
+  // A daemon answers /status as soon as its port binds, which is before it has
+  // reconciled the graph. The first tool call used to query a partially built index:
+  // measured at 120 of 300 files, so `explore` and friends answered from a fraction of
+  // the workspace and looked authoritative doing it.
+  const files: Record<string, string> = {};
+  for (let i = 0; i < 300; i++) {
+    files[`src/m${i}.ts`] = `export function fn${i}(a: number) { return helper${i}(a); }\nexport function helper${i}(a: number) { return a + ${i}; }\n`;
+  }
+  writeWs(GRAPH_WS, files);
+
+  const port = 48650;
+  const client = new KnowCodeRpcClient({ workdir: GRAPH_WS, port });
+
+  try {
+    const first = await executeKnowCodeTool('status', {}, GRAPH_WS, port, {
+      autoStartDaemon: true,
+      indexTimeoutMs: 60_000,
+    });
+    const second = await executeKnowCodeTool('status', {}, GRAPH_WS, port, { autoStartDaemon: true });
+
+    const count = (text: string) => {
+      const m = /\*\*Symbols\*\*: (\d+)/.exec(text);
+      return m ? Number(m[1]) : -1;
+    };
+
+    assert.ok(count(first.content) > 0, 'the first call must see a non-empty graph');
+    assert.strictEqual(
+      count(first.content),
+      count(second.content),
+      'the first call must see the same settled graph as the second'
+    );
+
+    // The note is attached once, to the call that paid for the start.
+    assert.match(first.content, /KnowCode daemon auto-started for/, 'the triggering call must say so');
+    assert.match(first.content, /indexed \d+ files, \d+ symbols/, 'and report what it cost');
+    assert.doesNotMatch(second.content, /auto-started/, 'a later call must not repeat the note');
+
+    // `sync` issued while the daemon is reconciling must not surface an error.
+    const sync = await executeKnowCodeTool('sync', {}, GRAPH_WS, port, { autoStartDaemon: true });
+    assert.doesNotMatch(sync.content, /Indexing already in progress|KnowCode Error/, 'a concurrent sync must not fail');
+    assert.match(sync.content, /Indexed \d+ files/);
+  } finally {
+    await client.shutdown().catch(() => {});
+    clean([GRAPH_WS]);
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Idle timeout
+// ---------------------------------------------------------------------------
+
+test('a daemon with an idle budget stops itself, and one without does not', async () => {
+  writeWs(GRAPH_WS, { 'src/a.ts': 'export function a() { return 1; }\n' });
+
+  const withBudget = 48660;
+  const withoutBudget = 48661;
+
+  const serves = async (port: number): Promise<boolean> => {
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/status`, { signal: AbortSignal.timeout(600) });
+      return res.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  try {
+    // A small budget, and no requests: nothing should keep it alive.
+    const idle = new KnowCodeDaemon({ workdir: GRAPH_WS, port: withBudget, idleTimeoutMs: 1_500 });
+    const info = await idle.start({ withWatcher: false });
+    await idle.reconcileStartup({});
+
+    // Wait without polling: a `/status` probe is itself a request, and the daemon
+    // counts any contact as activity, so polling would keep it alive forever.
+    await new Promise((r) => setTimeout(r, 5_000));
+    assert.strictEqual(await serves(info.port), false, 'an idle daemon must stop itself');
+    assert.strictEqual(existsSync(join(GRAPH_WS, '.knowcode', 'daemon.json')), false, 'and clean up its record');
+    assert.strictEqual(existsSync(join(GRAPH_WS, '.knowcode', 'serve.lock')), false, 'and release its guard');
+
+    // No budget: unchanged behaviour.
+    const busy = new KnowCodeDaemon({ workdir: GRAPH_WS, port: withoutBudget, idleTimeoutMs: 0 });
+    const busyInfo = await busy.start({ withWatcher: false });
+    await busy.reconcileStartup({});
+    await new Promise((r) => setTimeout(r, 2_500));
+    assert.strictEqual(await serves(busyInfo.port), true, 'without a budget a daemon must not stop');
+    await busy.stop();
+  } finally {
+    clean([GRAPH_WS]);
+  }
+});
+
+test('activity resets the idle budget', async () => {
+  writeWs(GRAPH_WS, { 'src/a.ts': 'export function a() { return 1; }\n' });
+
+  const port = 48662;
+  const daemon = new KnowCodeDaemon({ workdir: GRAPH_WS, port, idleTimeoutMs: 1_500 });
+
+  try {
+    const info = await daemon.start({ withWatcher: false });
+    await daemon.reconcileStartup({});
+
+    // Keep asking for longer than the budget; each request must reset the clock.
+    for (let i = 0; i < 5; i++) {
+      const res = await fetch(`http://127.0.0.1:${info.port}/status`, { signal: AbortSignal.timeout(600) });
+      assert.strictEqual(res.ok, true, 'a daemon answering requests must stay up');
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  } finally {
+    await daemon.stop();
+    clean([GRAPH_WS]);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Daemon identity and port selection
 // ---------------------------------------------------------------------------
 

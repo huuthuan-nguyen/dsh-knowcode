@@ -242,6 +242,7 @@ test('Config validates through Standard Schema v1 with defaults', () => {
     blastRadiusMaxDepth: 3,
     autoStartDaemon: true,
     stopDaemonOnExit: true,
+    idleTimeoutMs: 0,
   });
 
   // Missing / non-object input still yields defaults.
@@ -270,6 +271,7 @@ test('Config coerces invalid values and preserves explicit ones', () => {
     blastRadiusMaxDepth: 5,
     autoStartDaemon: false,
     stopDaemonOnExit: false,
+    idleTimeoutMinutes: 5,
     falkordbUrl: 'redis://127.0.0.1:6379',
   }).value;
   assert.deepStrictEqual(good, {
@@ -279,6 +281,7 @@ test('Config coerces invalid values and preserves explicit ones', () => {
     blastRadiusMaxDepth: 5,
     autoStartDaemon: false,
     stopDaemonOnExit: false,
+    idleTimeoutMs: 300_000,
     falkordbUrl: 'redis://127.0.0.1:6379',
   });
 
@@ -287,6 +290,13 @@ test('Config coerces invalid values and preserves explicit ones', () => {
   // `stopDaemonOnExit: false` must be distinguishable from its default.
   assert.strictEqual(standard.validate({ stopDaemonOnExit: false }).value.stopDaemonOnExit, false);
   assert.strictEqual(standard.validate({}).value.stopDaemonOnExit, true);
+
+  // An idle budget is minutes in config, milliseconds in the resolved shape, and
+  // anything invalid or non-positive means "disabled" rather than a surprise timer.
+  assert.strictEqual(standard.validate({}).value.idleTimeoutMs, 0, 'idle timeout is off by default');
+  assert.strictEqual(standard.validate({ idleTimeoutMinutes: 5 }).value.idleTimeoutMs, 300_000);
+  assert.strictEqual(standard.validate({ idleTimeoutMinutes: -3 }).value.idleTimeoutMs, 0);
+  assert.strictEqual(standard.validate({ idleTimeoutMinutes: 'soon' }).value.idleTimeoutMs, 0);
   assert.strictEqual(standard.validate({ autoStartDaemon: true }).value.autoStartDaemon, true);
   assert.strictEqual(standard.validate({}).value.autoStartDaemon, true);
 });
