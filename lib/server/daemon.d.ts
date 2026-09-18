@@ -24,6 +24,17 @@ export declare class KnowCodeDaemon {
     /** Expose the tracer so CLI callers can emit their own spans. */
     getTracer(): Tracer;
     /**
+     * Wait until the file watcher is delivering events.
+     *
+     * A file created after the startup stale check but before chokidar finishes its
+     * initial scan could otherwise be missed by both. `serve` waits here before
+     * reconciling, so that window does not exist.
+     *
+     * @param timeoutMs - give up after this long.
+     * @returns whether the watcher became ready (false when disabled or timed out).
+     */
+    waitForWatcherReady(timeoutMs?: number): Promise<boolean>;
+    /**
      * Bind the HTTP server, falling back to the next free port when the requested
      * one is already held.
      *

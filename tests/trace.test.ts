@@ -308,6 +308,11 @@ test('watcher emits batch and reindex traces for a live edit', async () => {
     assert.ok(capture.lines.some((l) => l.startsWith('[trace] watch: ignore matcher ready')));
     assert.ok(capture.lines.some((l) => l.startsWith('[trace] watch: worker started')));
 
+    // chokidar can swallow a file created before its initial scan completes, so
+    // wait for readiness rather than racing it — this was the source of an
+    // intermittent 6s timeout under load.
+    assert.strictEqual(await watcher.waitUntilReady(10_000), true, 'watcher must become ready');
+
     // Write a brand-new file so chokidar fires an "add" event.
     writeFileSync(
       join(WATCH_WS, 'src/live.ts'),

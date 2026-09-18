@@ -25,6 +25,14 @@ export async function runServeCommand(
 
   const tracer = daemon.getTracer();
 
+  // Wait for the watcher to actually deliver events before reconciling. A file
+  // created between the stale check and chokidar's initial scan completing would
+  // otherwise be missed by both.
+  const watcherReady = await daemon.waitForWatcherReady();
+  if (!watcherReady) {
+    tracer.line('watcher did not report ready; reconciling anyway');
+  }
+
   if (options.forceIndex) {
     tracer.line('index mode: forced full re-index (--force-index)');
     console.log(`[KnowCode] Performing full index (forced)...`);

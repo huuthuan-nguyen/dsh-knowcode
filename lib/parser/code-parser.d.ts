@@ -31,6 +31,15 @@ export declare class CodeParser {
      */
     private static stripStringLiterals;
     /**
+     * Whether a gathered declaration is genuinely `… = (params) => …`.
+     *
+     * The arrow pattern previously accepted any `const NAME = (` whose balanced
+     * text merely *contained* `=>`, so
+     * `const files = (res.data ?? []).map((row) => ({…}))` was indexed as a
+     * function named `files`. The arrow must follow the parameter list itself.
+     */
+    private static isArrowDeclaration;
+    /**
      * Trim a gathered declaration to just its signature.
      *
      * Cuts at the **last** `{` of the header, not the first: a default value
@@ -58,6 +67,9 @@ export declare class CodeParser {
     /**
      * Join a declaration's lines up to the line that opens its body, for
      * declarations whose header (extends/implements clauses) may wrap.
+     *
+     * @returns the joined header, and the index of its last line so callers can
+     *   avoid counting that line's braces twice.
      */
     private static gatherToBrace;
     /**

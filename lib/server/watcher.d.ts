@@ -9,6 +9,8 @@ export interface WatcherOptions {
     trace?: boolean;
     /** Destination for trace lines. Defaults to stderr when `trace` is true. */
     onTrace?: TraceSink;
+    /** Called once chokidar has finished its initial scan and is delivering events. */
+    onReady?: () => void;
 }
 export declare class CodeWatcher {
     private options;
@@ -19,8 +21,18 @@ export declare class CodeWatcher {
     private debounceTimer;
     private linkEngine;
     private tracer;
+    private ready;
     constructor(options: WatcherOptions);
     start(): void;
+    /** Whether chokidar finished its initial scan and is delivering events. */
+    isReady(): boolean;
+    /**
+     * Resolve once the watcher is delivering events.
+     *
+     * @param timeoutMs - give up after this long, returning false.
+     * @returns whether the watcher became ready.
+     */
+    waitUntilReady(timeoutMs?: number): Promise<boolean>;
     stop(): Promise<void>;
     private queueChange;
     private queueDelete;

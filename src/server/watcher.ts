@@ -29,6 +29,8 @@ export interface WatcherOptions {
   trace?: boolean;
   /** Destination for trace lines. Defaults to stderr when `trace` is true. */
   onTrace?: TraceSink;
+  /** Called once chokidar has finished its initial scan and is delivering events. */
+  onReady?: () => void;
 }
 
 export class CodeWatcher {
@@ -39,6 +41,7 @@ export class CodeWatcher {
   private debounceTimer: NodeJS.Timeout | null = null;
   private linkEngine: LinkEngine;
   private tracer: Tracer;
+  private ready = false;
 
   constructor(private options: WatcherOptions) {
     this.linkEngine = new LinkEngine(options.repo);
@@ -77,6 +80,37 @@ export class CodeWatcher {
       `worker started (workspace=${this.options.workdir}, engine=chokidar, ` +
         `awaitWriteFinish=200ms, debounce=${this.options.debounceMs ?? 300}ms)`
     );
+
+    // chokidar reports initial scan completion here. Until this fires, a file
+    // created in the workspace can be swallowed as part of the initial scan
+    // (`ignoreInitial: true`), so callers that need to be sure a change will be
+    // observed — `serve` startup, tests — should wait for it.
+    this.watcher.on('ready', () => {
+      this.ready = true;
+      this.tracer.line('ready (initial scan complete)');
+      this.options.onReady?.();
+    });
+  }
+
+  /** Whether chokidar finished its initial scan and is delivering events. */
+  public isReady(): boolean {
+    return this.ready;
+  }
+
+  /**
+   * Resolve once the watcher is delivering events.
+   *
+   * @param timeoutMs - give up after this long, returning false.
+   * @returns whether the watcher became ready.
+   */
+  public async waitUntilReady(timeoutMs = 10_000): Promise<boolean> {
+    if (this.ready) return true;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 25));
+      if (this.ready) return true;
+    }
+    return this.ready;
   }
 
   public async stop(): Promise<void> {

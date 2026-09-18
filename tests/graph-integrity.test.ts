@@ -160,6 +160,117 @@ test('call extraction ignores text inside string and template literals', () => {
   assert.ok(names.includes('format'), 'util.format(a) must be extracted');
 });
 
+test('query strings do not create phantom class methods', () => {
+  // Regression: the in-class method pattern accepts any `identifier(` at line
+  // start, and it ran on the raw line. Inside a class, a multi-line Cypher query
+  // therefore contributed a bogus method per fragment, so this repository gained
+  // 40 phantom methods named MATCH / MERGE / CREATE / AND / WHERE — which then
+  // filled `code_find_unused_dead_symbols` with fake dead-code candidates.
+  const src = [
+    'export class Repo {', // 1
+    '  async load(id: string) {', // 2
+    '    await this.graph.query(`', // 3
+    '      MATCH (s:Symbol {id: $id})', // 4
+    '      MERGE (a)-[:X]->(b)', // 5
+    '      RETURN count(*) AS n', // 6
+    '    `);', // 7
+    '  }', // 8
+    '  run(x: number) {', // 9
+    '    if (x > 0) {', // 10
+    '      return helper(x);', // 11
+    '    }', // 12
+    '  }', // 13
+    '}', // 14
+  ].join('\n');
+
+  const parsed = CodeParser.parseFile('src/repo.ts', src)!;
+  const qnames = parsed.symbols.map((s) => s.qname);
+
+  assert.deepStrictEqual(
+    parsed.symbols.filter((s) => s.kind !== 'class').map((s) => s.name).sort(),
+    ['load', 'run'],
+    `only real methods may be indexed, got: ${JSON.stringify(qnames)}`
+  );
+
+  for (const keyword of ['MATCH', 'MERGE', 'RETURN', 'count', 'if']) {
+    assert.ok(
+      !parsed.symbols.some((s) => s.name === keyword),
+      `"${keyword}" from a query string must not become a symbol`
+    );
+  }
+
+  // The enclosing class must still close at its real brace.
+  assert.strictEqual(parsed.symbols.find((s) => s.name === 'Repo')!.endLine, 14);
+  assert.strictEqual(parsed.symbols.find((s) => s.name === 'load')!.endLine, 8);
+  assert.strictEqual(parsed.symbols.find((s) => s.name === 'run')!.endLine, 13);
+});
+
+test('code embedded in a template literal is not indexed', () => {
+  // Test fixtures and code generators hold sample source inside template
+  // literals. Parsing it produced phantom symbols — this repository gained a
+  // `Calculator` class that only existed in a test fixture string, plus a
+  // `Calculator.join` method attributed from unrelated lines nearby.
+  const src = [
+    'import { join } from "node:path";', // 1
+    'test("fixture", () => {', // 2
+    '  writeFileSync(', // 3
+    '    join(WS, "src/math.ts"),', // 4
+    '    `', // 5
+    'export interface Adder { add(a: number, b: number): number }', // 6
+    '', // 7
+    'export class Calculator implements Adder {', // 8
+    '  add(a: number, b: number): number { return a + b; }', // 9
+    '}', // 10
+    '`', // 11
+    '  );', // 12
+    '});', // 13
+    '', // 14
+    'export class Real {', // 15
+    '  realMethod(): void {}', // 16
+    '}', // 17
+  ].join('\n');
+
+  const parsed = CodeParser.parseFile('tests/fixture.test.ts', src)!;
+  const qnames = parsed.symbols.map((s) => s.qname).sort();
+
+  assert.deepStrictEqual(
+    qnames,
+    ['Real', 'Real.realMethod'],
+    `only real declarations may be indexed, got: ${JSON.stringify(qnames)}`
+  );
+});
+
+test('control-flow keywords are never indexed as methods', () => {
+  // The in-class pattern accepts any `identifier(`, so `while (…)` inside a method
+  // became a method named `while`. Filtering must be by exact keyword: a
+  // `startsWith` test would also discard genuine methods like `iffy` or `format`.
+  const src = [
+    'export class Repo {', // 1
+    '  async load(id: string) {', // 2
+    '    while (this.pending) {', // 3
+    '      await this.flush();', // 4
+    '    }', // 5
+    '    for (const x of items) { consume(x); }', // 6
+    '    try { risky(); } catch (e) { handle(e); }', // 7
+    '    if (x) { return; }', // 8
+    '  }', // 9
+    '  iffy(a: number): void {}', // 10
+    '  format(a: string): string { return a; }', // 11
+    '}', // 12
+  ].join('\n');
+
+  const parsed = CodeParser.parseFile('src/repo.ts', src)!;
+  const names = parsed.symbols.map((s) => s.name);
+
+  for (const keyword of ['while', 'for', 'catch', 'if', 'try', 'else', 'do', 'switch']) {
+    assert.ok(!names.includes(keyword), `"${keyword}" must not be indexed as a symbol`);
+  }
+
+  // Genuine methods whose names merely start with a keyword stay indexed.
+  assert.ok(names.includes('iffy'), 'a method named iffy must survive keyword filtering');
+  assert.ok(names.includes('format'), 'a method named format must survive keyword filtering');
+});
+
 test('parser indexes declarations whose parameters wrap across lines', () => {
   // Regression: the declaration regexes required the whole `(...)` on one line, so
   // every wrapped signature was invisible to the graph — no symbol, hence no
