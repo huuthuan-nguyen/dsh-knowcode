@@ -1156,6 +1156,76 @@ test('activity resets the idle budget', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// Parser robustness: one file must never be able to abort a pass
+// ---------------------------------------------------------------------------
+
+test('a parenthesised Python import does not break parsing or indexing', async () => {
+  // `from x import (` opened a specifier list that continues for several lines. Only
+  // the first line was read, so the `(` itself became a specifier and the alias
+  // matcher built `new RegExp('\\b(\\b')` from it — an invalid pattern that threw and
+  // took the entire indexing pass, and the daemon, down with it.
+  const parens = 'from renderer.models import (\n    ActionCommandData,\n    BoardData,\n)\n\n\ndef render():\n    return ActionCommandData()\n';
+  const parsed = CodeParser.parseFile('renderer/__init__.py', parens);
+  assert.ok(parsed, 'the file must parse');
+  assert.deepStrictEqual(parsed!.imports[0].specifiers, ['ActionCommandData', 'BoardData']);
+  assert.ok(
+    parsed!.imports.every((imp) => imp.specifiers.every((spec) => /^\w+$/.test(spec))),
+    'only identifiers may be recorded as specifiers'
+  );
+
+  // And the same file must not stop a whole workspace from being indexed.
+  writeWs(GRAPH_WS, {
+    'renderer/__init__.py': parens,
+    'src/a.ts': 'export function alpha() { return 1; }\n',
+  });
+
+  const port = 48670;
+  const daemon = new KnowCodeDaemon({ workdir: GRAPH_WS, port });
+  try {
+    await daemon.start();
+    const summary = await daemon.performFullIndex();
+    assert.strictEqual(summary.skippedFiles ?? 0, 0, 'no file may be skipped');
+
+    const client = new KnowCodeRpcClient({ workdir: GRAPH_WS, port });
+    const files = await client.query('MATCH (f:File) RETURN f.path AS p ORDER BY p');
+    assert.deepStrictEqual(
+      (files.data as any[]).map((r) => r.p),
+      ['renderer/__init__.py', 'src/a.ts'],
+      'the Python file must be indexed alongside the TypeScript one'
+    );
+  } finally {
+    await daemon.stop();
+    clean([GRAPH_WS]);
+  }
+});
+
+test('the parser does not throw on awkward inputs', () => {
+  // The invariant that mattered: a single file could abort an entire pass. Every one
+  // of these used to be a candidate for an exception somewhere in the parser.
+  const cases: Array<[string, string]> = [
+    ['a.py', 'from x import (\n    a,\n    b,\n)\n'],
+    ['b.py', 'from x import (\n'],
+    ['c.py', 'import *\nfrom . import ()\n'],
+    ['d.ts', 'export class A {\n  private re = /[^{\\n]*\\{([\\s\\S]*?)\\}/g;\n  m(): void {}\n}\n'],
+    ['e.ts', 'export function f( {\n'],
+    ['f.ts', 'export interface I { a(): void; }\nexport class C implements I { a(): void {} }\n'],
+    ['g.ts', 'const s = `unterminated template\n'],
+    ['h.ts', '// comment with ) and } and {\nexport function g() { return h(); }\n'],
+    ['i.ts', 'import { } from "";\nimport x from ;\n'],
+    ['j.ts', 'export const t = (a) => { return a > b < c; };\n'],
+    ['k.ts', '/* unterminated block comment\nexport function k() {}\n'],
+  ];
+
+  for (const [file, source] of cases) {
+    assert.doesNotThrow(() => {
+      const parsed = CodeParser.parseFile(file, source);
+      // A parsed file must survive the alias and signature passes too.
+      if (parsed) JSON.stringify(parsed.libraryAliases ?? []);
+    }, `${file} must not throw`);
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Daemon identity and port selection
 // ---------------------------------------------------------------------------
 

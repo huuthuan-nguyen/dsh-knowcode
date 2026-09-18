@@ -304,6 +304,28 @@ export class CodeParser {
   }
 
   /**
+   * Whether `text` contains `word` as a whole identifier.
+   *
+   * Deliberately regex-free. The previous form built `new RegExp('\\b' + word + '\\b')`
+   * from an import specifier, so a specifier that was not a plain identifier — a bare
+   * `(` captured from a Python `from x import (…)` — produced an invalid pattern and
+   * threw, which aborted the whole indexing pass and killed the daemon.
+   */
+  private static containsWord(text: string, word: string): boolean {
+    if (word.length === 0) return false;
+    const isWordChar = (c: string) => /[A-Za-z0-9_$]/.test(c);
+
+    for (let i = text.indexOf(word); i !== -1; i = text.indexOf(word, i + 1)) {
+      const before = i === 0 ? '' : text[i - 1];
+      const after = text[i + word.length] ?? '';
+      if ((before === '' || !isWordChar(before)) && (after === '' || !isWordChar(after))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
    * Record every call-looking invocation in `text`.
    *
    * Shared by the whole-line pass and by declarations, which must also scan their own
@@ -415,8 +437,6 @@ export class CodeParser {
       const bindings = imp.specifiers.filter((spec) => spec && spec !== '*');
       if (bindings.length === 0) continue;
 
-      const patterns = bindings.map((b) => new RegExp(`\\b${b}\\b`));
-
       for (const raw of lines) {
         const line = raw.trim();
         if (line.startsWith('//') || line.startsWith('*') || line.startsWith('/*')) continue;
@@ -427,7 +447,7 @@ export class CodeParser {
         const target = match[1];
         const rhs = match[2];
         if (bindings.includes(target)) continue;
-        if (!patterns.some((re) => re.test(rhs))) continue;
+        if (!bindings.some((b) => CodeParser.containsWord(rhs, b))) continue;
 
         // `alias|module` — the module keeps the alias attributable to one library.
         const key = `${target}|${imp.importedPath}`;
@@ -949,10 +969,28 @@ export class CodeParser {
       }
 
       // Imports: from foo import bar, baz OR import foo
-      const fromImport = wasInTemplate ? null : trimmed.match(/^from\s+([.\w]+)\s+import\s+(.+)/);
+      const fromImport = wasInTemplate ? null : trimmed.match(/^from\s+([.\w]+)\s+import\s*(.*)$/);
       if (fromImport) {
         const mod = fromImport[1];
-        const specifiers = fromImport[2].split(',').map((s) => s.trim().split(/\s+as\s+/)[0]);
+
+        // `from x import (` opens a parenthesised list that continues for several
+        // lines. Reading only the first line captured the `(` itself as the sole
+        // specifier, which then broke the alias matcher. Gather to the closing paren.
+        let spec = fromImport[2] ?? '';
+        if (spec.includes('(') && !spec.includes(')')) {
+          for (let j = i + 1; j < lines.length; j++) {
+            spec += ` ${lines[j]}`;
+            if (lines[j].includes(')')) break;
+          }
+        }
+
+        const specifiers = spec
+          .replace(/[()]/g, ' ')
+          .split(',')
+          .map((entry) => entry.trim().split(/\s+as\s+/)[0].trim())
+          // Keep only identifiers: anything else is not a name a call can use.
+          .filter((entry) => /^[A-Za-z_]\w*$/.test(entry));
+
         imports.push({
           sourceFile: file,
           importedPath: mod,

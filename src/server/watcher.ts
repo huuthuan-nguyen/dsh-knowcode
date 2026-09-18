@@ -204,6 +204,10 @@ export class CodeWatcher {
         continue;
       }
 
+      // A parse failure on one changed file must not abort the batch, or the watcher
+      // stops reporting and the graph silently drifts from the workspace.
+      try {
+
       const hash = createHash('sha256').update(content).digest('hex');
       if (this.hashes.get(relPath) === hash) {
         skipped++;
@@ -268,6 +272,11 @@ export class CodeWatcher {
               `(schema: ${schema.entities.length} entity(ies), ${schema.containers.length} container(s))`
           );
         }
+      }
+      } catch (err: any) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error(`[KnowCode Watcher] Skipping ${relPath}: ${message}`);
+        if (tracing) this.tracer.line(`parse failed for ${relPath}: ${message}`);
       }
     }
 

@@ -17,6 +17,8 @@ export interface IndexSummary {
     docsIndexed: number;
     /** Contract entities and storage containers ingested from repository schema files. */
     schemaDefinitions?: number;
+    /** Files skipped because parsing or ingesting them threw. */
+    skippedFiles?: number;
     timeMs: number;
 }
 export interface DaemonOptions {
@@ -61,6 +63,8 @@ export declare class KnowCodeDaemon {
     private indexingPromise;
     /** Last time the daemon did anything, for the idle timeout. */
     private lastActivityAt;
+    /** Files skipped during the current pass because parsing or ingesting threw. */
+    private failedFiles;
     private idleTimer;
     /** Summary of the last startup reconcile, for callers that share an in-flight run. */
     private lastReconcile;

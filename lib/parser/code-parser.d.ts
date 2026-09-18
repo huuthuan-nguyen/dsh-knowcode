@@ -40,6 +40,15 @@ export declare class CodeParser {
      */
     private static codeAfterHeader;
     /**
+     * Whether `text` contains `word` as a whole identifier.
+     *
+     * Deliberately regex-free. The previous form built `new RegExp('\\b' + word + '\\b')`
+     * from an import specifier, so a specifier that was not a plain identifier — a bare
+     * `(` captured from a Python `from x import (…)` — produced an invalid pattern and
+     * threw, which aborted the whole indexing pass and killed the daemon.
+     */
+    private static containsWord;
+    /**
      * Record every call-looking invocation in `text`.
      *
      * Shared by the whole-line pass and by declarations, which must also scan their own

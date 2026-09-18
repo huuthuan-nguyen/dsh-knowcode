@@ -78,6 +78,8 @@ export interface IndexSummary {
   docsIndexed: number;
   /** Contract entities and storage containers ingested from repository schema files. */
   schemaDefinitions?: number;
+  /** Files skipped because parsing or ingesting them threw. */
+  skippedFiles?: number;
   timeMs: number;
 }
 
@@ -123,6 +125,8 @@ export class KnowCodeDaemon {
   private indexingPromise: Promise<unknown> | null = null;
   /** Last time the daemon did anything, for the idle timeout. */
   private lastActivityAt: number = Date.now();
+  /** Files skipped during the current pass because parsing or ingesting threw. */
+  private failedFiles: number = 0;
   private idleTimer: NodeJS.Timeout | null = null;
   /** Summary of the last startup reconcile, for callers that share an in-flight run. */
   private lastReconcile: ReconcileSummary | null = null;
@@ -542,6 +546,7 @@ export class KnowCodeDaemon {
   }
 
   private async performFullIndexUnlocked(targetPath?: string): Promise<IndexSummary> {
+    this.failedFiles = 0;
     const startTime = Date.now();
     const indexNs = process.hrtime.bigint();
 
@@ -583,35 +588,44 @@ export class KnowCodeDaemon {
           continue;
         }
 
-        // Check if code file
-        const parsedCode = CodeParser.parseFile(relPath, content);
-        if (parsedCode) {
-          parsedCode.mtimeMs = readMtimeMs(absPath);
-          await this.repo!.ingestCodeFile(parsedCode);
-          codeCount++;
-          totalSymbols += parsedCode.symbols.length;
-          totalCalls += parsedCode.calls.length;
-          allImports.push(...parsedCode.imports);
-          allCalls.push(...parsedCode.calls);
-          allHeritage.push(...parsedCode.heritage);
-          // ORM models declared in code — a Mongoose schema in a `.ts` model file is
-          // the most common "schema in source" there is — are collected here because
-          // a code file returns before the schema branch below.
-          schemaCount += await this.ingestCodeSchema(relPath, content, parsedCode.imports);
-          continue;
-        }
+        // One unparseable file must not abort the pass, let alone the daemon.
+        // A parser bug on a single Python file used to throw here and take the whole
+        // index — and the workspace — down with it.
+        try {
+          // Check if code file
+          const parsedCode = CodeParser.parseFile(relPath, content);
+          if (parsedCode) {
+            parsedCode.mtimeMs = readMtimeMs(absPath);
+            await this.repo!.ingestCodeFile(parsedCode);
+            codeCount++;
+            totalSymbols += parsedCode.symbols.length;
+            totalCalls += parsedCode.calls.length;
+            allImports.push(...parsedCode.imports);
+            allCalls.push(...parsedCode.calls);
+            allHeritage.push(...parsedCode.heritage);
+            // ORM models declared in code — a Mongoose schema in a `.ts` model file is
+            // the most common "schema in source" there is — are collected here because
+            // a code file returns before the schema branch below.
+            schemaCount += await this.ingestCodeSchema(relPath, content, parsedCode.imports);
+            continue;
+          }
 
-        // Check if doc file
-        const parsedDoc = DocParser.parseDoc(relPath, content);
-        if (parsedDoc) {
-          await this.repo!.ingestDocFile(parsedDoc);
-          docCount++;
-          continue;
-        }
+          // Check if doc file
+          const parsedDoc = DocParser.parseDoc(relPath, content);
+          if (parsedDoc) {
+            await this.repo!.ingestDocFile(parsedDoc);
+            docCount++;
+            continue;
+          }
 
-        // Schema / DDL held in the repository. The live database is never read: only
-        // text files that are already in scope reach this point.
-        schemaCount += await this.ingestSchemaContent(relPath, content);
+          // Schema / DDL held in the repository. The live database is never read: only
+          // text files that are already in scope reach this point.
+          schemaCount += await this.ingestSchemaContent(relPath, content);
+        } catch (err: any) {
+          this.failedFiles++;
+          this.log(`Skipping ${relPath}: ${err?.message ?? String(err)}`);
+          this.tracer.line(`parse failed for ${relPath}: ${err?.message ?? String(err)}`);
+        }
       }
       parseNs = process.hrtime.bigint() - parseStartNs;
 
@@ -641,6 +655,7 @@ export class KnowCodeDaemon {
         symbolsIndexed: totalSymbols,
         docsIndexed: docCount,
         schemaDefinitions: schemaCount,
+        skippedFiles: this.failedFiles,
         timeMs: elapsed,
       };
     } finally {
@@ -849,27 +864,34 @@ export class KnowCodeDaemon {
         continue;
       }
 
-      const parsedCode = CodeParser.parseFile(relPath, content);
-      if (parsedCode) {
-        parsedCode.mtimeMs = readMtimeMs(absPath);
-        await this.repo.ingestCodeFile(parsedCode);
-        allImports.push(...parsedCode.imports);
-        allCalls.push(...parsedCode.calls);
-        allHeritage.push(...parsedCode.heritage);
-        await this.ingestCodeSchema(relPath, content, parsedCode.imports);
-        sawCode = true;
-        updated++;
-        continue;
-      }
+      try {
+        const parsedCode = CodeParser.parseFile(relPath, content);
+        if (parsedCode) {
+          parsedCode.mtimeMs = readMtimeMs(absPath);
+          await this.repo.ingestCodeFile(parsedCode);
+          allImports.push(...parsedCode.imports);
+          allCalls.push(...parsedCode.calls);
+          allHeritage.push(...parsedCode.heritage);
+          await this.ingestCodeSchema(relPath, content, parsedCode.imports);
+          sawCode = true;
+          updated++;
+          continue;
+        }
 
-      const parsedDoc = DocParser.parseDoc(relPath, content);
-      if (parsedDoc) {
-        await this.repo.ingestDocFile(parsedDoc);
-        updated++;
-        continue;
-      }
+        const parsedDoc = DocParser.parseDoc(relPath, content);
+        if (parsedDoc) {
+          await this.repo.ingestDocFile(parsedDoc);
+          updated++;
+          continue;
+        }
 
-      updated += (await this.ingestSchemaContent(relPath, content)) > 0 ? 1 : 0;
+        updated += (await this.ingestSchemaContent(relPath, content)) > 0 ? 1 : 0;
+      } catch (err: any) {
+        // Same contract as a full pass: one bad file is skipped, not fatal.
+        this.failedFiles++;
+        this.log(`Skipping ${relPath}: ${err?.message ?? String(err)}`);
+        this.tracer.line(`parse failed for ${relPath}: ${err?.message ?? String(err)}`);
+      }
     }
 
     if (sawCode) {
