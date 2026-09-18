@@ -1,5 +1,5 @@
 import http from 'node:http';
-import { existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync, statSync } from 'node:fs';
+import { existsSync, writeFileSync, unlinkSync, mkdirSync, readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { join, resolve } from 'node:path';
 import fg from 'fast-glob';
@@ -11,6 +11,7 @@ import { DocParser } from '../parser/doc-parser.js';
 import { LinkEngine } from '../parser/link-engine.js';
 import { CodeWatcher } from './watcher.js';
 import { Tracer, type TraceSink, fmtMs, nsToMs } from './trace.js';
+import { readMtimeMs } from './fs-mtime.js';
 import type { KnowCodeStats } from '../types.js';
 
 /** File globs considered indexable. Shared by indexing and the stale check. */
@@ -28,15 +29,6 @@ const INDEX_IGNORE_GLOBS = [
   '**/.next/**',
   '**/coverage/**',
 ];
-
-/** Read a file's mtime in epoch milliseconds, or 0 when unavailable. */
-function readMtimeMs(absPath: string): number {
-  try {
-    return statSync(absPath).mtimeMs;
-  } catch {
-    return 0;
-  }
-}
 
 export interface DaemonOptions {
   workdir: string;

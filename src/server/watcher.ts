@@ -1,5 +1,5 @@
 import { watch, type FSWatcher } from 'chokidar';
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { CodeParser } from '../parser/code-parser.js';
@@ -7,6 +7,7 @@ import { DocParser } from '../parser/doc-parser.js';
 import type { KnowCodeRepository } from '../db/client.js';
 import { LinkEngine } from '../parser/link-engine.js';
 import { Tracer, type TraceSink, fmtMs, nsToMs } from './trace.js';
+import { readMtimeMs } from './fs-mtime.js';
 
 /** Directory/filename fragments excluded from watching. */
 const WATCH_IGNORE_FRAGMENTS = [
@@ -235,14 +236,5 @@ export class CodeWatcher {
           `(relink=${fmtMs(relinkMs)}, skipped=${skipped}, removed=${deletions.length})`
       );
     }
-  }
-}
-
-/** Read a file's mtime in epoch milliseconds, or 0 when unavailable. */
-function readMtimeMs(absPath: string): number {
-  try {
-    return statSync(absPath).mtimeMs;
-  } catch {
-    return 0;
   }
 }

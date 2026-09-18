@@ -79,7 +79,41 @@ const ECOSYSTEM_KNOWLEDGE_BASE: Record<
 };
 
 export class KnowCodeRepository {
+  /**
+   * Per-path ingestion queues.
+   *
+   * Ingestion is a delete-then-create sequence with many awaits, so two
+   * concurrent calls for the same path interleave and each `CREATE` survives:
+   * four overlapping calls for one file produced 48 symbols and 4 `File` nodes
+   * instead of 3 and 1. The watcher fires on save while a manual reindex or the
+   * startup stale check may be running, so this overlap is reachable in normal
+   * use, not just under test.
+   */
+  private ingestQueues = new Map<string, Promise<void>>();
+
   constructor(private graph: Graph) {}
+
+  /**
+   * Run `task` after any in-flight task already queued for `key`.
+   *
+   * Failures do not break the chain, and the queue entry is dropped once it is
+   * the settled tail so the map cannot grow without bound.
+   */
+  private runExclusive<T>(key: string, task: () => Promise<T>): Promise<T> {
+    const previous = this.ingestQueues.get(key) ?? Promise.resolve();
+    const next = previous.then(task, task);
+
+    const tail = next.then(
+      () => undefined,
+      () => undefined
+    );
+    this.ingestQueues.set(key, tail);
+    void tail.then(() => {
+      if (this.ingestQueues.get(key) === tail) this.ingestQueues.delete(key);
+    });
+
+    return next;
+  }
 
   /**
    * Run raw Cypher query with optional parameters
@@ -89,34 +123,54 @@ export class KnowCodeRepository {
   }
 
   /**
-   * Delete all existing data for a code file (for clean incremental upserts)
+   * Delete all existing data for a code file (for clean incremental upserts).
+   *
+   * Symbols are removed by their own `file` property as well as through the
+   * `:CONTAINS` edge. Deleting only via the edge left orphans behind, and any
+   * orphan then accumulated duplicates on the next ingest.
    */
   public async deleteFile(filePath: string): Promise<void> {
     await this.graph.query(
-      `MATCH (f:File {path: $filePath})
-       OPTIONAL MATCH (f)-[:CONTAINS]->(s:Symbol)
-       DETACH DELETE s, f`,
+      `MATCH (s:Symbol {file: $filePath}) DETACH DELETE s`,
+      { params: { filePath } }
+    );
+    await this.graph.query(
+      `MATCH (f:File {path: $filePath}) DETACH DELETE f`,
       { params: { filePath } }
     );
   }
 
   /**
-   * Delete all existing data for a document (for clean incremental upserts)
+   * Delete all existing data for a document (for clean incremental upserts).
+   *
+   * Sections and rules are also removed by their own document path so orphans
+   * from an interrupted ingest cannot survive.
    */
   public async deleteDoc(docPath: string): Promise<void> {
     await this.graph.query(
-      `MATCH (d:Document {path: $docPath})
-       OPTIONAL MATCH (d)-[:HAS_SECTION]->(sec:DocSection)
-       OPTIONAL MATCH (d)-[:HAS_RULE]->(r:Rule)
-       DETACH DELETE sec, r, d`,
+      `MATCH (sec:DocSection {documentPath: $docPath}) DETACH DELETE sec`,
+      { params: { docPath } }
+    );
+    await this.graph.query(
+      `MATCH (r:Rule {sourceDoc: $docPath}) DETACH DELETE r`,
+      { params: { docPath } }
+    );
+    await this.graph.query(
+      `MATCH (d:Document {path: $docPath}) DETACH DELETE d`,
       { params: { docPath } }
     );
   }
 
   /**
-   * Ingest a single parsed code file and its symbols
+   * Ingest a single parsed code file and its symbols.
+   *
+   * Serialized per path — see {@link runExclusive}.
    */
   public async ingestCodeFile(parsed: ParsedCodeFile): Promise<void> {
+    return await this.runExclusive(parsed.path, () => this.ingestCodeFileUnlocked(parsed));
+  }
+
+  private async ingestCodeFileUnlocked(parsed: ParsedCodeFile): Promise<void> {
     await this.deleteFile(parsed.path);
 
     // 1. Create File node
@@ -312,9 +366,15 @@ export class KnowCodeRepository {
   }
 
   /**
-   * Ingest a documentation file (Markdown/ADR/spec)
+   * Ingest a documentation file (Markdown/ADR/spec).
+   *
+   * Serialized per path — see {@link runExclusive}.
    */
   public async ingestDocFile(doc: ParsedDocFile): Promise<void> {
+    return await this.runExclusive(doc.path, () => this.ingestDocFileUnlocked(doc));
+  }
+
+  private async ingestDocFileUnlocked(doc: ParsedDocFile): Promise<void> {
     await this.deleteDoc(doc.path);
 
     // 1. Create Document node
@@ -1039,12 +1099,16 @@ export class KnowCodeRepository {
    * Find unused unexported symbols with 0 incoming calls in workspace
    */
   public async findUnusedSymbols(limit: number = 50): Promise<UnusedSymbolResult[]> {
+    // Constructors are excluded by name: a `new Foo()` invocation is attributed to
+    // the class symbol, never to `Foo.constructor`, so every constructor would
+    // otherwise be reported as dead code.
     const res = await this.graph.query(
       `MATCH (s:Symbol)
        WHERE NOT ()-[:CALLS]->(s)
          AND s.isExported = false
          AND NOT s.file CONTAINS 'test'
          AND NOT s.file CONTAINS 'spec'
+         AND NOT s.name IN ['constructor', '__init__']
        RETURN s.name AS name, s.qname AS qname, s.kind AS kind, s.file AS file,
               s.startLine AS startLine, s.isExported AS isExported
        ORDER BY s.file, s.startLine

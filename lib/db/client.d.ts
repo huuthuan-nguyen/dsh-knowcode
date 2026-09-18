@@ -2,23 +2,51 @@ import type { Graph } from 'falkordb';
 import type { ParsedCodeFile, ParsedDocFile, CodeSymbol, CodeCall, BlastRadiusResult, CycleDetectionResult, PortingContractResult, CallPathResult, SubtypeResult, UnusedSymbolResult, GitDiffImpactResult, CrossParadigmBlueprint, ThirdPartyUsageSlice, DuplicateCloneResult, FeatureCodeFlowResult, SymbolSpecFeaturesResult, ContractEntityDef, StorageContainerDef, ContractStorageMappingResult, StorageMigrationImpactResult, StorageEngine } from '../types.js';
 export declare class KnowCodeRepository {
     private graph;
+    /**
+     * Per-path ingestion queues.
+     *
+     * Ingestion is a delete-then-create sequence with many awaits, so two
+     * concurrent calls for the same path interleave and each `CREATE` survives:
+     * four overlapping calls for one file produced 48 symbols and 4 `File` nodes
+     * instead of 3 and 1. The watcher fires on save while a manual reindex or the
+     * startup stale check may be running, so this overlap is reachable in normal
+     * use, not just under test.
+     */
+    private ingestQueues;
     constructor(graph: Graph);
+    /**
+     * Run `task` after any in-flight task already queued for `key`.
+     *
+     * Failures do not break the chain, and the queue entry is dropped once it is
+     * the settled tail so the map cannot grow without bound.
+     */
+    private runExclusive;
     /**
      * Run raw Cypher query with optional parameters
      */
     query(cypher: string, params?: Record<string, any>): Promise<any>;
     /**
-     * Delete all existing data for a code file (for clean incremental upserts)
+     * Delete all existing data for a code file (for clean incremental upserts).
+     *
+     * Symbols are removed by their own `file` property as well as through the
+     * `:CONTAINS` edge. Deleting only via the edge left orphans behind, and any
+     * orphan then accumulated duplicates on the next ingest.
      */
     deleteFile(filePath: string): Promise<void>;
     /**
-     * Delete all existing data for a document (for clean incremental upserts)
+     * Delete all existing data for a document (for clean incremental upserts).
+     *
+     * Sections and rules are also removed by their own document path so orphans
+     * from an interrupted ingest cannot survive.
      */
     deleteDoc(docPath: string): Promise<void>;
     /**
-     * Ingest a single parsed code file and its symbols
+     * Ingest a single parsed code file and its symbols.
+     *
+     * Serialized per path — see {@link runExclusive}.
      */
     ingestCodeFile(parsed: ParsedCodeFile): Promise<void>;
+    private ingestCodeFileUnlocked;
     /**
      * Ingest imports for a file
      */
@@ -41,9 +69,12 @@ export declare class KnowCodeRepository {
      */
     ingestHeritage(heritage: ParsedCodeFile['heritage']): Promise<void>;
     /**
-     * Ingest a documentation file (Markdown/ADR/spec)
+     * Ingest a documentation file (Markdown/ADR/spec).
+     *
+     * Serialized per path — see {@link runExclusive}.
      */
     ingestDocFile(doc: ParsedDocFile): Promise<void>;
+    private ingestDocFileUnlocked;
     /**
      * Codebase architectural exploration
      */

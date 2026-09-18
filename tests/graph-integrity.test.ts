@@ -5,6 +5,9 @@ import { resolve, join } from 'node:path';
 import { KnowCodeDaemon } from '../lib/server/daemon.js';
 import { KnowCodeRpcClient } from '../lib/server/client-rpc.js';
 import { CodeParser } from '../lib/parser/code-parser.js';
+import { FalkorDBManager } from '../lib/db/falkor-manager.js';
+import { initGraphSchema } from '../lib/db/schema.js';
+import { KnowCodeRepository } from '../lib/db/client.js';
 import { executeKnowCodeTool } from '../lib/tools/dispatcher.js';
 
 const GRAPH_WS = resolve('/tmp/knowcode-graph-integrity');
@@ -417,6 +420,44 @@ test('imports of compiled output link back to the source tree', async () => {
   } finally {
     await daemon.stop();
     clean([GRAPH_WS]);
+  }
+});
+
+test('concurrent ingestion of one file cannot duplicate symbols', async () => {
+  // Ingestion is delete-then-create with many awaits, so overlapping calls for the
+  // same path interleaved and every CREATE survived: four concurrent calls for one
+  // file produced 48 symbols and 4 File nodes instead of 3 and 1, and the
+  // duplicates then appeared repeatedly in dead-code and explore output.
+  const dbDir = resolve('/tmp/knowcode-ingest-race-db');
+  clean([dbDir]);
+
+  const mgr = new FalkorDBManager();
+  const instance = await mgr.start({ dataDir: dbDir, preferredPort: 48520 });
+
+  try {
+    const graph = instance.client.selectGraph('knowcode-ingest-race');
+    await initGraphSchema(graph);
+    const repo = new KnowCodeRepository(graph);
+
+    const parsed = CodeParser.parseFile(
+      'src/a.ts',
+      'export class A {\n  m(): void {}\n  n(): void {}\n}\n'
+    )!;
+
+    await Promise.all([1, 2, 3, 4].map(() => repo.ingestCodeFile(parsed)));
+
+    const symbols = await repo.query('MATCH (s:Symbol) RETURN count(s) AS n');
+    const files = await repo.query('MATCH (f:File) RETURN count(f) AS n');
+    const dupes = await repo.query(
+      'MATCH (s:Symbol) RETURN s.id AS id, count(*) AS n ORDER BY n DESC LIMIT 1'
+    );
+
+    assert.strictEqual(symbols.data[0].n, 3, `expected 3 symbols, got ${symbols.data[0].n}`);
+    assert.strictEqual(files.data[0].n, 1, `expected 1 File node, got ${files.data[0].n}`);
+    assert.strictEqual(dupes.data[0].n, 1, `symbol ${dupes.data[0].id} was duplicated`);
+  } finally {
+    await mgr.stop();
+    clean([dbDir]);
   }
 });
 
