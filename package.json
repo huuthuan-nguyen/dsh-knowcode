@@ -15,6 +15,16 @@
   "bin": {
     "knowcode": "./bin/knowcode.js"
   },
+  "files": [
+    "bin",
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
   "exports": {
     ".": {
       "types": "./lib/index.d.ts",
