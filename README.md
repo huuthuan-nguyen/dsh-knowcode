@@ -54,8 +54,8 @@ Traditional AI agent search tools rely on naive lexical search (`grep`) or flat 
 | Requirement | Notes |
 |---|---|
 | **Node.js** `^22.19.0 \|\| >=24.0.0` | Same range the DeepSeek Harness requires. |
-| **pnpm** | Used by the development workflow (`pnpm run build`, `pnpm run test`). |
-| **Git LFS** | Needed to fetch the embedded FalkorDB binaries when cloning — see *Platform Support & Execution Guide* below. |
+| **pnpm** | Only for the development workflow (`pnpm run build`, `pnpm run test`). |
+| **Git LFS** | Only when installing **from a clone** — the repository stores the embedded FalkorDB binaries through LFS. Packages installed from **npm** already contain the real binaries and need nothing extra. See *Platform Support & Execution Guide* below. |
 
 ### Where does the `knowcode` command come from?
 
@@ -104,7 +104,7 @@ npm unlink -g dsh-knowcode
 
 ### Option 3 — Install into a DeepSeek Harness profile
 
-This links the package into `~/.dsh/profiles/<profile>/node_modules/` and registers it with the harness in one step:
+Installs the published package into `~/.dsh/profiles/<profile>/node_modules/` and registers it with the harness in one step:
 
 ```bash
 dsh plugin add --profile web dsh-knowcode
@@ -114,6 +114,12 @@ The CLI becomes available inside that profile as well:
 
 ```bash
 ~/.dsh/profiles/web/node_modules/.bin/knowcode index .
+```
+
+Working on the plugin itself? Point the profile at your checkout instead, so the harness loads your build:
+
+```bash
+dsh plugin add --profile web link:/absolute/path/to/dsh-knowcode
 ```
 
 Prefer configuring the profile by hand? Use the bundle patch shown under **DeepSeek Harness Plugin Setup** below, then restart the harness.
