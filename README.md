@@ -1,5 +1,6 @@
 # ⚡ DSH-KnowCode: Unified Code Graph & Knowledge Base for DeepSeek Harness
 
+[![npm version](https://img.shields.io/npm/v/dsh-knowcode.svg)](https://www.npmjs.com/package/dsh-knowcode)
 [![GitHub release](https://img.shields.io/github/v/release/huuthuan-nguyen/dsh-knowcode)](https://github.com/huuthuan-nguyen/dsh-knowcode/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![DeepSeek Harness plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
@@ -117,19 +118,25 @@ The CLI becomes available inside that profile as well:
 
 Prefer configuring the profile by hand? Use the bundle patch shown under **DeepSeek Harness Plugin Setup** below, then restart the harness.
 
-### Option 4 — Install from npm (once published)
+### Option 4 — Install from npm
 
-> ⚠️ **Not published yet** — `npm view dsh-knowcode` currently returns `404`. These commands apply after the first `npm publish`.
+Published on the public registry as [`dsh-knowcode`](https://www.npmjs.com/package/dsh-knowcode), so no clone is needed:
 
 ```bash
-# Global CLI
+# Try it without installing anything
+npx dsh-knowcode index .
+npx dsh-knowcode serve .
+
+# …or install the CLI globally
 npm install -g dsh-knowcode
 knowcode index .
 
-# …or as a project dependency
+# …or add it to a project
 pnpm add dsh-knowcode
 pnpm exec knowcode index .
 ```
+
+> The package bundles the embedded FalkorDB engine for macOS (Apple Silicon) and Linux x64 — **~35 MB compressed, 92.8 MB installed**. On a platform without bundled binaries, point `FALKORDB_URL` at an external instance; see **Platform Support & Execution Guide** below.
 
 ### Verify the installation
 
