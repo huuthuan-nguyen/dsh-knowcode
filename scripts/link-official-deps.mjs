@@ -1,4 +1,4 @@
-import { readdirSync, existsSync, symlinkSync, rmSync, lstatSync } from 'node:fs';
+import { readdirSync, existsSync, symlinkSync, rmSync, lstatSync, mkdirSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const officialHarness = '/Users/kean/Projects/deepseek-harness';
@@ -9,7 +9,9 @@ if (!existsSync(officialHarness)) {
   process.exit(0);
 }
 
-// Find all packages in packages/
+mkdirSync(targetDir, { recursive: true });
+
+// Find all packages in a directory recursively
 function findPackages(dir) {
   const pkgs = [];
   const entries = readdirSync(dir, { withFileTypes: true });
@@ -30,8 +32,11 @@ function findPackages(dir) {
   return pkgs;
 }
 
-import { readFileSync } from 'node:fs';
-const packages = findPackages(join(officialHarness, 'packages'));
+const searchDirs = ['packages', 'vendor']
+  .map((d) => join(officialHarness, d))
+  .filter(existsSync);
+
+const packages = searchDirs.flatMap((dir) => findPackages(dir));
 console.log(`Found ${packages.length} official packages in harness.`);
 
 for (const p of packages) {
