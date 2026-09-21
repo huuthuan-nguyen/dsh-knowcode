@@ -74,6 +74,7 @@ export declare class KnowCodeDaemon {
     private dataDir;
     /** Largest file to read and index, in bytes. */
     private readonly maxFileSize;
+    private shutdownHandler;
     constructor(options: DaemonOptions);
     /** Expose the tracer so CLI callers can emit their own spans. */
     getTracer(): Tracer;

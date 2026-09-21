@@ -100,3 +100,29 @@ The \`computeTotal\` function calculates the sum of all elements.
     }
   }
 });
+
+test('KnowCodeDaemon and FalkorDBManager deregister process listeners on stop', async () => {
+  const sigintBefore = process.listenerCount('SIGINT');
+  const sigtermBefore = process.listenerCount('SIGTERM');
+  const exitBefore = process.listenerCount('exit');
+
+  const testDir = resolve('/tmp/knowcode-listener-test');
+  const daemon = new KnowCodeDaemon({
+    workdir: testDir,
+    port: 48990,
+  });
+
+  await daemon.start();
+  assert.ok(process.listenerCount('SIGINT') > sigintBefore);
+  assert.ok(process.listenerCount('SIGTERM') > sigtermBefore);
+
+  await daemon.stop();
+  assert.strictEqual(process.listenerCount('SIGINT'), sigintBefore);
+  assert.strictEqual(process.listenerCount('SIGTERM'), sigtermBefore);
+  assert.strictEqual(process.listenerCount('exit'), exitBefore);
+
+  if (existsSync(testDir)) {
+    rmSync(testDir, { recursive: true, force: true });
+  }
+});
+

@@ -9,6 +9,7 @@ export interface FalkorInstance {
 }
 export declare class FalkorDBManager {
     private instance;
+    private cleanupHandler;
     /**
      * Find an available TCP port starting from startPort
      */

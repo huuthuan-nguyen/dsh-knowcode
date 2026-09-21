@@ -137,6 +137,7 @@ export class KnowCodeDaemon {
   private dataDir: string | null = null;
   /** Largest file to read and index, in bytes. */
   private readonly maxFileSize: number;
+  private shutdownHandler: (() => void) | null = null;
 
   constructor(private options: DaemonOptions) {
     this.maxFileSize = options.maxFileSize ?? DEFAULT_MAX_FILE_SIZE;
@@ -337,9 +338,9 @@ export class KnowCodeDaemon {
     }
 
     // Clean exit handlers
-    const shutdown = () => this.stop().catch(() => {});
-    process.on('SIGTERM', shutdown);
-    process.on('SIGINT', shutdown);
+    this.shutdownHandler = () => this.stop().catch(() => {});
+    process.on('SIGTERM', this.shutdownHandler);
+    process.on('SIGINT', this.shutdownHandler);
 
     this.startIdleTimer();
 
@@ -347,6 +348,12 @@ export class KnowCodeDaemon {
   }
 
   public async stop(): Promise<void> {
+    if (this.shutdownHandler) {
+      process.off('SIGTERM', this.shutdownHandler);
+      process.off('SIGINT', this.shutdownHandler);
+      this.shutdownHandler = null;
+    }
+
     this.log('Stopping KnowCode daemon...');
 
     if (this.idleTimer) {

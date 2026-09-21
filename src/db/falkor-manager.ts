@@ -18,6 +18,7 @@ export interface FalkorInstance {
 
 export class FalkorDBManager {
   private instance: FalkorInstance | null = null;
+  private cleanupHandler: (() => void) | null = null;
 
   /**
    * Find an available TCP port starting from startPort
@@ -206,12 +207,12 @@ export class FalkorDBManager {
     };
 
     // Auto-cleanup on process exit
-    const cleanup = () => {
+    this.cleanupHandler = () => {
       this.stop().catch(() => {});
     };
-    process.on('exit', cleanup);
-    process.on('SIGINT', cleanup);
-    process.on('SIGTERM', cleanup);
+    process.on('exit', this.cleanupHandler);
+    process.on('SIGINT', this.cleanupHandler);
+    process.on('SIGTERM', this.cleanupHandler);
 
     return this.instance;
   }
@@ -220,6 +221,13 @@ export class FalkorDBManager {
    * Stop the running instance
    */
   public async stop(): Promise<void> {
+    if (this.cleanupHandler) {
+      process.off('exit', this.cleanupHandler);
+      process.off('SIGINT', this.cleanupHandler);
+      process.off('SIGTERM', this.cleanupHandler);
+      this.cleanupHandler = null;
+    }
+
     if (!this.instance) return;
 
     const { client, process: child } = this.instance;
