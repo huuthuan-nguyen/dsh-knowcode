@@ -44,6 +44,28 @@ const NON_DECLARATION_KEYWORDS = new Set([
   'in',
 ]);
 
+const CONTROL_FLOW_KEYWORDS = new Set([
+  'if',
+  'else',
+  'for',
+  'while',
+  'do',
+  'switch',
+  'case',
+  'default',
+  'catch',
+  'finally',
+  'try',
+  'return',
+  'throw',
+  'await',
+  'yield',
+  'break',
+  'continue',
+  'import',
+  'export',
+]);
+
 /**
  * Trim a gathered declaration to just its signature.
  * Cuts at the last `{` of the header.
@@ -637,7 +659,7 @@ function recordCall(
     }
   }
 
-  if (calleeName && !NON_DECLARATION_KEYWORDS.has(calleeName) && calleeName !== 'require' && calleeName !== 'import') {
+  if (calleeName && !CONTROL_FLOW_KEYWORDS.has(calleeName) && calleeName !== 'require' && calleeName !== 'import') {
     calls.push({
       callerId,
       calleeName,
@@ -665,15 +687,24 @@ function parsePythonAst(
   function visit(node: Parser.SyntaxNode, currentClass: string | null = null): void {
     if (node.type === 'import_statement') {
       for (const child of node.children) {
+        let mod = '';
+        let alias = '';
         if (child.type === 'dotted_name') {
-          const mod = child.text;
+          mod = child.text;
+        } else if (child.type === 'aliased_import') {
+          const nameNode = child.childForFieldName('name') ?? child.children[0];
+          mod = nameNode ? nameNode.text : '';
+          const aliasNode = child.childForFieldName('alias');
+          if (aliasNode) alias = aliasNode.text;
+        }
+        if (mod) {
           const candidates = resolveCandidates(file, mod);
           imports.push({
             sourceFile: file,
             importedPath: mod,
             resolvedFile: candidates[0],
             resolvedCandidates: candidates,
-            specifiers: [mod],
+            specifiers: [alias || mod],
           });
         }
       }
@@ -838,7 +869,7 @@ function collectPythonCalls(
             calleeQName = obj ? `${obj.text}.${calleeName}` : calleeName;
           }
         }
-        if (calleeName && !NON_DECLARATION_KEYWORDS.has(calleeName)) {
+        if (calleeName && !CONTROL_FLOW_KEYWORDS.has(calleeName)) {
           calls.push({
             callerId,
             calleeName,
@@ -1018,7 +1049,7 @@ function collectGoCalls(
             calleeQName = operand ? `${operand.text}.${calleeName}` : calleeName;
           }
         }
-        if (calleeName && !NON_DECLARATION_KEYWORDS.has(calleeName)) {
+        if (calleeName && !CONTROL_FLOW_KEYWORDS.has(calleeName)) {
           calls.push({
             callerId,
             calleeName,
@@ -1226,7 +1257,7 @@ function collectRustCalls(
             calleeQName = path ? `${path.text}::${calleeName}` : calleeName;
           }
         }
-        if (calleeName && !NON_DECLARATION_KEYWORDS.has(calleeName)) {
+        if (calleeName && !CONTROL_FLOW_KEYWORDS.has(calleeName)) {
           calls.push({
             callerId,
             calleeName,
@@ -1378,7 +1409,7 @@ function collectCppCalls(
             calleeQName = argument ? `${argument.text}.${calleeName}` : calleeName;
           }
         }
-        if (calleeName && !NON_DECLARATION_KEYWORDS.has(calleeName)) {
+        if (calleeName && !CONTROL_FLOW_KEYWORDS.has(calleeName)) {
           calls.push({
             callerId,
             calleeName,
@@ -1527,7 +1558,7 @@ function collectJavaCalls(
       if (nameNode) {
         const calleeName = nameNode.text;
         const calleeQName = objNode ? `${objNode.text}.${calleeName}` : calleeName;
-        if (!NON_DECLARATION_KEYWORDS.has(calleeName)) {
+        if (!CONTROL_FLOW_KEYWORDS.has(calleeName)) {
           calls.push({
             callerId,
             calleeName,
@@ -1664,8 +1695,8 @@ function parseCSharpAst(
       }
     }
 
-    if (node.type === 'namespace_declaration') {
-      const nameNode = node.childForFieldName('name');
+    if (node.type === 'namespace_declaration' || node.type === 'file_scoped_namespace_declaration') {
+      const nameNode = node.childForFieldName('name') ?? node.children.find((c) => c.type === 'qualified_name' || c.type === 'identifier');
       const nsName = nameNode ? nameNode.text : currentContainer;
       for (const child of node.children) {
         visit(child, nsName);
@@ -1704,7 +1735,7 @@ function collectCSharpCalls(
             calleeQName = exprNode ? `${exprNode.text}.${calleeName}` : calleeName;
           }
         }
-        if (calleeName && !NON_DECLARATION_KEYWORDS.has(calleeName)) {
+        if (calleeName && !CONTROL_FLOW_KEYWORDS.has(calleeName)) {
           calls.push({
             callerId,
             calleeName,
@@ -1849,7 +1880,7 @@ function collectRubyCalls(
       const fnNode = node.childForFieldName('method') ?? node.children.find((c) => c.type === 'identifier');
       if (fnNode) {
         const calleeName = fnNode.text;
-        if (!NON_DECLARATION_KEYWORDS.has(calleeName) && calleeName !== 'require' && calleeName !== 'require_relative') {
+        if (!CONTROL_FLOW_KEYWORDS.has(calleeName) && calleeName !== 'require' && calleeName !== 'require_relative') {
           calls.push({
             callerId,
             calleeName,
@@ -1998,7 +2029,7 @@ function collectPhpCalls(
       const nameNode = node.childForFieldName('name') ?? node.children.find((c) => c.type === 'name');
       if (nameNode) {
         const calleeName = nameNode.text;
-        if (!NON_DECLARATION_KEYWORDS.has(calleeName)) {
+        if (!CONTROL_FLOW_KEYWORDS.has(calleeName)) {
           calls.push({
             callerId,
             calleeName,
@@ -2522,7 +2553,7 @@ function collectGenericCalls(
         if (calleeName.includes('::')) calleeName = calleeName.split('::').pop() ?? calleeName;
         if (calleeName.includes('->')) calleeName = calleeName.split('->').pop() ?? calleeName;
 
-        if (calleeName && /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(calleeName) && !NON_DECLARATION_KEYWORDS.has(calleeName)) {
+        if (calleeName && /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(calleeName) && !CONTROL_FLOW_KEYWORDS.has(calleeName)) {
           calls.push({
             callerId,
             calleeName,

@@ -11,6 +11,11 @@ export declare class TreeSitterEngine {
     private static parsers;
     private static customExtensions;
     private static loadPromises;
+    private static wasmPathCache;
+    /**
+     * Timeout in microseconds for parser execution to prevent catastrophic grammar loops (1 second)
+     */
+    static readonly PARSER_TIMEOUT_MICROS = 1000000;
     /**
      * Normalize language names (e.g. csharp -> c_sharp, shell -> bash)
      */
@@ -20,7 +25,7 @@ export declare class TreeSitterEngine {
      * 1. Environment variable KNOWCODE_GRAMMARS_DIR
      * 2. Local workspace .knowcode/grammars/
      * 3. User home ~/.knowcode/grammars/
-     * 4. Bundled tree-sitter-wasms/out/
+     * 4. Bundled tree-sitter-wasms/out/ (cached in memory)
      */
     static resolveWasmPath(lang: string): string | null;
     /**

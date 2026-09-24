@@ -37,6 +37,12 @@ export class TreeSitterEngine {
   private static parsers = new Map<string, Parser>();
   private static customExtensions = new Map<string, string>();
   private static loadPromises = new Map<string, Promise<boolean>>();
+  private static wasmPathCache = new Map<string, string | null>();
+
+  /**
+   * Timeout in microseconds for parser execution to prevent catastrophic grammar loops (1 second)
+   */
+  public static readonly PARSER_TIMEOUT_MICROS = 1_000_000;
 
   /**
    * Normalize language names (e.g. csharp -> c_sharp, shell -> bash)
@@ -62,10 +68,14 @@ export class TreeSitterEngine {
    * 1. Environment variable KNOWCODE_GRAMMARS_DIR
    * 2. Local workspace .knowcode/grammars/
    * 3. User home ~/.knowcode/grammars/
-   * 4. Bundled tree-sitter-wasms/out/
+   * 4. Bundled tree-sitter-wasms/out/ (cached in memory)
    */
   public static resolveWasmPath(lang: string): string | null {
     const norm = TreeSitterEngine.normalizeLanguageName(lang);
+    if (this.wasmPathCache.has(norm)) {
+      return this.wasmPathCache.get(norm)!;
+    }
+
     const candidateFilenames = [
       `tree-sitter-${norm}.wasm`,
       `${norm}.wasm`,
@@ -78,7 +88,10 @@ export class TreeSitterEngine {
     if (envDir && existsSync(envDir)) {
       for (const fn of candidateFilenames) {
         const full = join(envDir, fn);
-        if (existsSync(full)) return full;
+        if (existsSync(full)) {
+          this.wasmPathCache.set(norm, full);
+          return full;
+        }
       }
     }
 
@@ -87,7 +100,10 @@ export class TreeSitterEngine {
     if (existsSync(localDir)) {
       for (const fn of candidateFilenames) {
         const full = join(localDir, fn);
-        if (existsSync(full)) return full;
+        if (existsSync(full)) {
+          this.wasmPathCache.set(norm, full);
+          return full;
+        }
       }
     }
 
@@ -96,20 +112,32 @@ export class TreeSitterEngine {
     if (existsSync(userDir)) {
       for (const fn of candidateFilenames) {
         const full = join(userDir, fn);
-        if (existsSync(full)) return full;
+        if (existsSync(full)) {
+          this.wasmPathCache.set(norm, full);
+          return full;
+        }
       }
     }
 
     // 4. Bundled package tree-sitter-wasms
-    for (const fn of candidateFilenames) {
-      try {
-        const resolved = require.resolve(`tree-sitter-wasms/out/${fn}`);
-        if (existsSync(resolved)) return resolved;
-      } catch {
-        // try next
+    // Note: tree-sitter-swift in tree-sitter-wasms 0.1.13 triggers a fatal V8 Turboshaft
+    // compiler Zone OOM crash in Node.js 24 during tier-up. We exclude the bundled swift
+    // grammar so .swift files safely fall back to the generic regex parser.
+    if (norm !== 'swift') {
+      for (const fn of candidateFilenames) {
+        try {
+          const resolved = require.resolve(`tree-sitter-wasms/out/${fn}`);
+          if (existsSync(resolved)) {
+            this.wasmPathCache.set(norm, resolved);
+            return resolved;
+          }
+        } catch {
+          // try next
+        }
       }
     }
 
+    this.wasmPathCache.set(norm, null);
     return null;
   }
 
@@ -135,6 +163,7 @@ export class TreeSitterEngine {
 
             const parser = new Parser();
             parser.setLanguage(lang);
+            parser.setTimeoutMicros(TreeSitterEngine.PARSER_TIMEOUT_MICROS);
             this.parsers.set(langKey, parser);
           } catch (err) {
             console.warn(`[TreeSitter] Warning: Failed to load core grammar for ${langKey}:`, err);
@@ -214,6 +243,7 @@ export class TreeSitterEngine {
 
         const parser = new Parser();
         parser.setLanguage(language);
+        parser.setTimeoutMicros(TreeSitterEngine.PARSER_TIMEOUT_MICROS);
         this.parsers.set(norm, parser);
         if (norm !== lang) this.parsers.set(lang, parser);
 
@@ -257,6 +287,7 @@ export class TreeSitterEngine {
 
       const parser = new Parser();
       parser.setLanguage(language);
+      parser.setTimeoutMicros(TreeSitterEngine.PARSER_TIMEOUT_MICROS);
       this.parsers.set(norm, parser);
       if (norm !== lang) this.parsers.set(lang, parser);
 

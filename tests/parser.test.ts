@@ -486,3 +486,40 @@ test('TreeSitterEngine supports dynamic grammar and custom extension registratio
   assert.strictEqual(parsed.symbols.length, 1);
   assert.strictEqual(parsed.symbols[0].name, 'custom_task');
 });
+
+test('TreeSitterEngine correctly handles C# file-scoped namespaces, Python aliased imports and new constructor calls', async () => {
+  // 1. C# file-scoped namespace
+  const cs = `
+namespace Acme.Commerce.Orders;
+
+public class OrderWorkflow {
+    public void Execute() {
+        Log("running");
+    }
+}
+  `;
+  const pCs = CodeParser.parseFile('Acme/Order.cs', cs);
+  assert.ok(pCs);
+  const m = pCs.symbols.find((s) => s.name === 'Execute')!;
+  assert.strictEqual(m.qname, 'Acme.Commerce.Orders.OrderWorkflow.Execute');
+
+  // 2. Python aliased imports
+  const py = 'import numpy as np\nimport pandas as pd\nimport os\n';
+  const pPy = CodeParser.parseFile('analysis.py', py);
+  assert.ok(pPy);
+  assert.strictEqual(pPy.imports.length, 3);
+  assert.ok(pPy.imports.some((i) => i.importedPath === 'numpy' && i.specifiers[0] === 'np'));
+  assert.ok(pPy.imports.some((i) => i.importedPath === 'pandas' && i.specifiers[0] === 'pd'));
+
+  // 3. Rust Point::new call captured
+  const rs = 'fn init() { let p = Point::new(10, 20); }';
+  const pRs = CodeParser.parseFile('point.rs', rs);
+  assert.ok(pRs);
+  assert.ok(pRs.calls.some((c) => c.calleeName === 'new'));
+
+  // 4. Ruby User.new call captured
+  const rb = 'class Factory\n  def self.build\n    User.new\n  end\nend';
+  const pRb = CodeParser.parseFile('factory.rb', rb);
+  assert.ok(pRb);
+  assert.ok(pRb.calls.some((c) => c.calleeName === 'new'));
+});
