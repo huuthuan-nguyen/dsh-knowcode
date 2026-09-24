@@ -2,13 +2,14 @@
 
 [![npm version](https://img.shields.io/npm/v/dsh-knowcode.svg)](https://www.npmjs.com/package/dsh-knowcode)
 [![GitHub release](https://img.shields.io/github/v/release/huuthuan-nguyen/dsh-knowcode)](https://github.com/huuthuan-nguyen/dsh-knowcode/releases)
+[![Tree-sitter](https://img.shields.io/badge/AST%20Engine-Tree--sitter%20WASM-brightgreen.svg)](https://tree-sitter.github.io/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![DeepSeek Harness plugin](https://img.shields.io/badge/DeepSeek%20Harness-plugin-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 [![topic: dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-2ea44f)](https://github.com/topics/dsh-plugin)
 
 <p align="center">
   <b>The most powerful codebase navigation, refactoring, and knowledge intelligence plugin for DeepSeek Harness agents.</b><br>
-  Combines the best of AST symbol graphs and Markdown knowledge bases into an embedded <b>FalkorDB Cypher graph database</b> with a <code>tgrep</code>-style client-server daemon and incremental file watcher.
+  Combines the best of <b>Tree-sitter WebAssembly AST symbol graphs</b> and Markdown knowledge bases into an embedded <b>FalkorDB Cypher graph database</b> with a <code>tgrep</code>-style client-server daemon and incremental file watcher.
 </p>
 
 ---
@@ -23,7 +24,7 @@ Traditional AI agent search tools rely on naive lexical search (`grep`) or flat 
 - Struggle to port complex modules to another programming language due to hidden dependencies.
 
 **DSH-KnowCode** solves this by unifying:
-1. **Code Graph**: Tree-sitter WebAssembly (WASM) powered AST symbols (classes, functions, methods, interfaces, types, structs, traits), import trees, call hierarchies, inheritance heritage, and test relationships.
+1. **Code Graph**: Real Tree-sitter WebAssembly (WASM) AST parsing — **no fixed language whitelist** — extracting classes, functions, methods, interfaces, types, structs, traits, enums and modules with qualified names, import trees, call hierarchies, inheritance heritage, and test relationships.
 2. **Knowledge Graph**: Architecture Decision Records (ADRs), READMEs, design documents, and coding standards.
 3. **Cross-Entity Linking**: Automatic bidirectional edges between documentation and code symbols (`(:DocSection)-[:DOCUMENTS]->(:Symbol)` and `(:Rule)-[:GOVERNS]->(:File)`).
 4. **Embedded FalkorDB Engine**: High-performance sparse-matrix GraphBLAS engine executing Cypher queries in sub-milliseconds without Docker or cloud dependencies.
@@ -44,6 +45,60 @@ Traditional AI agent search tools rely on naive lexical search (`grep`) or flat 
 | **Language Porting Contract**| ❌ No | ❌ No | ✅ **API contract & dependency blueprint** |
 | **Client-Server Architecture** | CLI subprocess per call | Headless / In-process | ✅ **Microsoft `tgrep`-style daemon + watcher** |
 | **Incremental Re-indexing** | Stale sync required | Upsert on import | ✅ **Live debounced file watcher + SHA hashes** |
+
+---
+
+## 🌳 Polyglot Tree-sitter AST Engine — No Language Limits
+
+The code graph is built on a real **Tree-sitter WebAssembly (WASM)** parser, not regex heuristics. There is **no fixed language whitelist**: the engine ships prebuilt grammars for the most common languages, loads the rest on demand, and accepts **any custom Tree-sitter grammar you provide**.
+
+Why it matters:
+
+| **Dimension** | Regex / heuristic parsers | **DSH-KnowCode (Tree-sitter WASM)** |
+|---|---|---|
+| **Accuracy** | Breaks on nesting, generics, macros, multiline signatures | **True AST** — exact nodes, scopes, and ranges |
+| **False positives** | Symbols "found" inside strings, comments, template literals | **Impossible** — strings/comments are leaves, never declarations |
+| **Language coverage** | Hardcoded per-language regex | **Any grammar** — 30+ bundled, unlimited via `.wasm` drop-in |
+| **Native toolchain** | Often needs `node-gyp`, Python, a C++ compiler | **None** — WASM runs identically on macOS, Linux, Windows |
+| **Onboarding a new language** | New regex parser + new tests | **Drop in one `.wasm` file** |
+
+### Bundled languages (loaded automatically)
+
+| Area | Languages | Extensions |
+|---|---|---|
+| **Web & Enterprise** | TypeScript, TSX, JavaScript, JSX | `.ts` `.tsx` `.mts` `.cts` `.js` `.jsx` `.mjs` `.cjs` |
+| **Systems & Backend** | Go, Rust, C, C++, Java, **C#** | `.go` `.rs` `.c` `.h` `.cpp` `.hpp` `.cc` `.cxx` `.java` `.cs` |
+| **Scripting & Dynamic** | Python, Ruby, PHP, Lua, Bash / Shell | `.py` `.rb` `.php` `.lua` `.sh` `.bash` `.zsh` |
+| **Modern & Functional** | Kotlin, Scala, Swift, Zig, Elixir, OCaml, ReScript | `.kt` `.scala` `.swift` `.zig` `.ex` `.exs` `.ml` `.res` |
+| **Smart Contracts** | Solidity | `.sol` |
+| **Anything else** | **Every other Tree-sitter grammar** | any extension you register |
+
+Each language yields the same graph shape — classes, interfaces, structs, traits, enums, modules, functions, methods, qualified names (`Namespace.Class.method`), inherited signatures, complete `startLine`/`endLine` bodies, import edges, and call edges.
+
+### Adding a language the engine does not ship
+
+Nothing to compile. Drop a `.wasm` grammar into any of these locations, and it is picked up automatically:
+
+| Source | Path | Notes |
+|---|---|---|
+| Project-local | `<workspace>/.knowcode/grammars/tree-sitter-<lang>.wasm` | Travels with the repo — best for teams |
+| User-global | `~/.knowcode/grammars/tree-sitter-<lang>.wasm` | Available to every workspace on the machine |
+| Environment | `KNOWCODE_GRAMMARS_DIR=/path/to/grammars` | Point at a shared grammars cache |
+
+You can also register one programmatically:
+
+```ts
+import { TreeSitterEngine } from 'dsh-knowcode/lib/parser/tree-sitter.js';
+
+// Load a grammar by file path or Buffer, and claim extensions for it
+await TreeSitterEngine.registerGrammar('haskell', '/grammars/tree-sitter-haskell.wasm', ['.hs', '.lhs']);
+TreeSitterEngine.registerExtension('.hbs', 'handlebars');
+
+// Force-load ahead of time (optional — parsing also loads on demand)
+await TreeSitterEngine.ensureLanguage('haskell');
+```
+
+A grammar that fails to load (version mismatch, corrupt file) is reported as a warning and skipped — it never aborts an indexing run. Files for that language fall back to the built-in generic declaration scan instead of the AST walker.
 
 ---
 
@@ -74,7 +129,7 @@ Pick whichever option below fits your situation.
 ```bash
 git clone git@github.com:huuthuan-nguyen/dsh-knowcode.git
 cd dsh-knowcode
-pnpm install            # runtime deps: commander, falkordb, chokidar, fast-glob, ignore
+pnpm install            # runtime deps: commander, falkordb, chokidar, fast-glob, ignore, web-tree-sitter, tree-sitter-wasms
 ./bin/knowcode.js index .
 ```
 
