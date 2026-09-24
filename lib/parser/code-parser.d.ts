@@ -1,13 +1,20 @@
 import type { ParsedCodeFile } from '../types.js';
 export declare class CodeParser {
+    static readonly EXTENSION_MAP: Record<string, string>;
     /**
-     * Determine language from file extension
+     * Determine language from file extension, supporting all Tree-sitter languages
+     * as well as custom user-registered grammars.
      */
     static detectLanguage(filePath: string): string | null;
     /**
      * Check if file path represents a test file
      */
     static isTestFile(filePath: string): boolean;
+    /**
+     * Parse code file asynchronously, automatically ensuring any on-demand
+     * language grammar is loaded and ready before parsing with Tree-sitter.
+     */
+    static parseFileAsync(filePath: string, content?: string): Promise<ParsedCodeFile | null>;
     /**
      * Parse code file into symbols, imports, and calls
      */
@@ -152,7 +159,7 @@ export declare class CodeParser {
      * the mapping those imports resolved to nothing, so no `TESTS_FOR` edge was
      * created and affected-test discovery silently under-reported.
      */
-    private static resolveRelativeCandidates;
+    static resolveRelativeCandidates(currentFile: string, importPath: string): string[];
     /**
      * Accurately calculate the endLine for each symbol (functions, methods, classes)
      * so that structural hashing, git diff range mapping, and definition lookups

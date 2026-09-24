@@ -11,7 +11,7 @@
 /** Extensions whose contents are parsed as code or documentation. */
 export declare const INDEXABLE_EXTENSIONS: ReadonlySet<string>;
 /** fast-glob pattern covering exactly {@link INDEXABLE_EXTENSIONS}. */
-export declare const INDEXABLE_GLOB = "**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,c,cpp,h,hpp,md,mdx,markdown,txt}";
+export declare const INDEXABLE_GLOB = "**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,c,cpp,h,hpp,cs,rb,php,kt,scala,swift,lua,zig,sh,bash,sol,ex,exs,ml,res,m,md,mdx,markdown,txt}";
 /**
  * Text formats that describe a schema or DDL.
  *

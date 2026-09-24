@@ -23,7 +23,7 @@ Traditional AI agent search tools rely on naive lexical search (`grep`) or flat 
 - Struggle to port complex modules to another programming language due to hidden dependencies.
 
 **DSH-KnowCode** solves this by unifying:
-1. **Code Graph**: AST-parsed symbols (classes, functions, methods, interfaces, types), import trees, call hierarchies, inheritance, and test relationships.
+1. **Code Graph**: Tree-sitter WebAssembly (WASM) powered AST symbols (classes, functions, methods, interfaces, types, structs, traits), import trees, call hierarchies, inheritance heritage, and test relationships.
 2. **Knowledge Graph**: Architecture Decision Records (ADRs), READMEs, design documents, and coding standards.
 3. **Cross-Entity Linking**: Automatic bidirectional edges between documentation and code symbols (`(:DocSection)-[:DOCUMENTS]->(:Symbol)` and `(:Rule)-[:GOVERNS]->(:File)`).
 4. **Embedded FalkorDB Engine**: High-performance sparse-matrix GraphBLAS engine executing Cypher queries in sub-milliseconds without Docker or cloud dependencies.
@@ -36,7 +36,7 @@ Traditional AI agent search tools rely on naive lexical search (`grep`) or flat 
 | Feature | `dsh-tool-codegraph` | `dsh-knowledge-base` | **`dsh-knowcode`** |
 |---|---|---|---|
 | **Database** | External C binary | SQLite FTS5 | **Embedded FalkorDB (Cypher Graph)** |
-| **Code AST Graph** | ✅ Yes | ❌ No | ✅ **Yes (Multi-language)** |
+| **Code AST Graph** | ✅ Yes | ❌ No | ✅ **Yes (Multi-language Tree-sitter WASM)** |
 | **Knowledge / Docs** | ❌ No | ✅ Documents | ✅ **Unified (ADRs + Docs + Rules)** |
 | **Cross-Linking** | ❌ No | ❌ No | ✅ **Docs link to Code Symbols** |
 | **Refactoring Blast Radius** | Basic depth | ❌ None | ✅ **Transitive risk scoring + test mapping** |
@@ -682,7 +682,7 @@ pnpm run build
 pnpm run test
 ```
 Runs:
-- Multi-language AST parsing (TypeScript, Python, Go, Rust, C++)
+- Polyglot Tree-sitter AST parsing across 30+ languages (TypeScript, JavaScript, Python, Go, Rust, Java, C#, C/C++, Ruby, PHP, Kotlin, Scala, Swift, Lua, Zig, Bash, Solidity, Elixir, OCaml, and custom user-provided grammars)
 - Document parsing, rule extraction, and symbol cross-linking
 - Embedded FalkorDB startup, Cypher schema, and graph queries
 - Daemon HTTP/JSON RPC server and debounced file watcher

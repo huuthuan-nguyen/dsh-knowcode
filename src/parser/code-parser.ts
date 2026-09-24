@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { join, dirname, resolve, extname } from 'node:path';
 import type { ParsedCodeFile, CodeSymbol, CodeCall, FileImport, SymbolKind } from '../types.js';
 import { normalizeFunctionBody } from './clone-detector.js';
+import { TreeSitterEngine } from './tree-sitter.js';
+import { parseWithTreeSitterAst } from './tree-sitter-ast.js';
 
 /** `foo.bar(` / `baz(` / `Type::method(` — one regex reused by every parser. */
 const CALL_PATTERN = /(?:(\w+)\.)?(\w+)\s*\(/g;
@@ -57,41 +59,135 @@ const NON_DECLARATION_KEYWORDS = new Set([
 ]);
 
 export class CodeParser {
+  public static readonly EXTENSION_MAP: Record<string, string> = {
+    // TypeScript & JavaScript
+    '.ts': 'typescript',
+    '.mts': 'typescript',
+    '.cts': 'typescript',
+    '.tsx': 'typescript',
+    '.js': 'javascript',
+    '.mjs': 'javascript',
+    '.cjs': 'javascript',
+    '.jsx': 'javascript',
+
+    // Python
+    '.py': 'python',
+    '.pyw': 'python',
+
+    // Go
+    '.go': 'go',
+
+    // Rust
+    '.rs': 'rust',
+
+    // Java
+    '.java': 'java',
+
+    // C & C++
+    '.c': 'c',
+    '.h': 'c',
+    '.cpp': 'cpp',
+    '.hpp': 'cpp',
+    '.cc': 'cpp',
+    '.cxx': 'cpp',
+    '.hh': 'cpp',
+    '.hxx': 'cpp',
+
+    // C#
+    '.cs': 'c_sharp',
+    '.csx': 'c_sharp',
+
+    // Ruby
+    '.rb': 'ruby',
+    '.rake': 'ruby',
+    '.gemspec': 'ruby',
+
+    // PHP
+    '.php': 'php',
+    '.phtml': 'php',
+    '.php3': 'php',
+    '.php4': 'php',
+    '.php5': 'php',
+    '.php7': 'php',
+    '.php8': 'php',
+
+    // Kotlin
+    '.kt': 'kotlin',
+    '.kts': 'kotlin',
+
+    // Scala
+    '.scala': 'scala',
+    '.sc': 'scala',
+
+    // Swift
+    '.swift': 'swift',
+
+    // Lua
+    '.lua': 'lua',
+
+    // Zig
+    '.zig': 'zig',
+
+    // Bash & Shell
+    '.sh': 'bash',
+    '.bash': 'bash',
+    '.zsh': 'bash',
+
+    // Elixir
+    '.ex': 'elixir',
+    '.exs': 'elixir',
+
+    // Solidity
+    '.sol': 'solidity',
+
+    // OCaml & ReScript
+    '.ml': 'ocaml',
+    '.mli': 'ocaml',
+    '.res': 'rescript',
+    '.resi': 'rescript',
+
+    // Objective-C
+    '.m': 'objc',
+    '.mm': 'objc',
+
+    // Web & Templates
+    '.vue': 'vue',
+    '.erb': 'embedded_template',
+
+    // Others in Tree-sitter ecosystem
+    '.el': 'elisp',
+    '.rdl': 'systemrdl',
+    '.tla': 'tlaplus',
+  };
+
   /**
-   * Determine language from file extension
+   * Determine language from file extension, supporting all Tree-sitter languages
+   * as well as custom user-registered grammars.
    */
   public static detectLanguage(filePath: string): string | null {
     const ext = extname(filePath).toLowerCase();
-    switch (ext) {
-      case '.ts':
-      case '.tsx':
-      case '.mts':
-      case '.cts':
-        return 'typescript';
-      case '.js':
-      case '.jsx':
-      case '.mjs':
-      case '.cjs':
-        return 'javascript';
-      case '.py':
-        return 'python';
-      case '.go':
-        return 'go';
-      case '.rs':
-        return 'rust';
-      case '.java':
-        return 'java';
-      case '.c':
-      case '.h':
-        return 'c';
-      case '.cpp':
-      case '.hpp':
-      case '.cc':
-      case '.cxx':
-        return 'cpp';
-      default:
-        return null;
+    if (!ext) return null;
+
+    // Data/config and schema formats are never code files with function/class graphs
+    if (['.json', '.yaml', '.yml', '.toml', '.html', '.htm', '.css', '.scss', '.md', '.txt', '.sql', '.proto'].includes(ext)) {
+      return null;
     }
+
+    // 1. Check custom dynamically-registered extensions
+    const custom = TreeSitterEngine.getCustomExtension(ext);
+    if (custom) return custom;
+
+    // 2. Check built-in extension mapping
+    const mapped = CodeParser.EXTENSION_MAP[ext];
+    if (mapped) return mapped;
+
+    // 3. Fallback: check if a WASM grammar exists for this extension name (e.g. .hs -> haskell, .clj -> clojure)
+    const rawName = ext.slice(1);
+    if (TreeSitterEngine.resolveWasmPath(rawName)) {
+      return rawName;
+    }
+
+    return null;
   }
 
   /**
@@ -113,6 +209,18 @@ export class CodeParser {
   }
 
   /**
+   * Parse code file asynchronously, automatically ensuring any on-demand
+   * language grammar is loaded and ready before parsing with Tree-sitter.
+   */
+  public static async parseFileAsync(filePath: string, content?: string): Promise<ParsedCodeFile | null> {
+    const lang = CodeParser.detectLanguage(filePath);
+    if (!lang) return null;
+
+    await TreeSitterEngine.ensureLanguage(lang);
+    return CodeParser.parseFile(filePath, content);
+  }
+
+  /**
    * Parse code file into symbols, imports, and calls
    */
   public static parseFile(filePath: string, content?: string): ParsedCodeFile | null {
@@ -126,26 +234,41 @@ export class CodeParser {
     const size = Buffer.byteLength(source, 'utf8');
     const isTest = CodeParser.isTestFile(filePath);
 
-    const symbols: CodeSymbol[] = [];
-    const calls: CodeCall[] = [];
-    const imports: FileImport[] = [];
-    const heritage: ParsedCodeFile['heritage'] = [];
+    let symbols: CodeSymbol[] = [];
+    let calls: CodeCall[] = [];
+    let imports: FileImport[] = [];
+    let heritage: ParsedCodeFile['heritage'] = [];
 
-    // Parse according to language
-    if (lang === 'typescript' || lang === 'javascript') {
-      CodeParser.parseJsTs(filePath, lines, symbols, calls, imports, heritage);
-    } else if (lang === 'python') {
-      CodeParser.parsePython(filePath, lines, symbols, calls, imports, heritage);
-    } else if (lang === 'go') {
-      CodeParser.parseGo(filePath, lines, symbols, calls, imports);
-    } else if (lang === 'rust') {
-      CodeParser.parseRust(filePath, lines, symbols, calls, imports);
+    // Parse with Tree-sitter WebAssembly AST engine when available
+    const tree = TreeSitterEngine.parse(lang, source, filePath);
+    if (tree) {
+      const astResult = parseWithTreeSitterAst(
+        filePath,
+        lang,
+        source,
+        lines,
+        tree,
+        (file, path) => CodeParser.resolveRelativeCandidates(file, path)
+      );
+      symbols = astResult.symbols;
+      calls = astResult.calls;
+      imports = astResult.imports;
+      heritage = astResult.heritage;
     } else {
-      CodeParser.parseGeneric(filePath, lines, symbols, calls);
+      // Legacy fallback
+      if (lang === 'typescript' || lang === 'javascript') {
+        CodeParser.parseJsTs(filePath, lines, symbols, calls, imports, heritage);
+      } else if (lang === 'python') {
+        CodeParser.parsePython(filePath, lines, symbols, calls, imports, heritage);
+      } else if (lang === 'go') {
+        CodeParser.parseGo(filePath, lines, symbols, calls, imports);
+      } else if (lang === 'rust') {
+        CodeParser.parseRust(filePath, lines, symbols, calls, imports);
+      } else {
+        CodeParser.parseGeneric(filePath, lines, symbols, calls);
+      }
+      CodeParser.computeEndLines(lines, symbols, lang);
     }
-
-    // Accurately compute endLine for all symbols (functions, methods, classes)
-    CodeParser.computeEndLines(lines, symbols, lang);
 
     // Compute structural AST hash for functions and methods for duplicate clone detection
     for (const sym of symbols) {
@@ -1312,6 +1435,18 @@ export class CodeParser {
     '.py',
     '.go',
     '.rs',
+    '.java',
+    '.cs',
+    '.rb',
+    '.php',
+    '.kt',
+    '.scala',
+    '.swift',
+    '.lua',
+    '.zig',
+    '.sol',
+    '.ex',
+    '.exs',
   ];
 
   /**
@@ -1329,7 +1464,7 @@ export class CodeParser {
    * the mapping those imports resolved to nothing, so no `TESTS_FOR` edge was
    * created and affected-test discovery silently under-reported.
    */
-  private static resolveRelativeCandidates(currentFile: string, importPath: string): string[] {
+  public static resolveRelativeCandidates(currentFile: string, importPath: string): string[] {
     if (!importPath.startsWith('.')) return [];
 
     const dir = dirname(currentFile);

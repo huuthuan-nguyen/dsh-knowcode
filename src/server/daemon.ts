@@ -7,6 +7,7 @@ import { FalkorDBManager, FalkorInstance } from '../db/falkor-manager.js';
 import { initGraphSchema } from '../db/schema.js';
 import { KnowCodeRepository } from '../db/client.js';
 import { CodeParser } from '../parser/code-parser.js';
+import { TreeSitterEngine } from '../parser/tree-sitter.js';
 import { DocParser } from '../parser/doc-parser.js';
 import { StorageParser } from '../parser/storage-parser.js';
 import { LinkEngine } from '../parser/link-engine.js';
@@ -585,6 +586,14 @@ export class KnowCodeDaemon {
       const allHeritage: any[] = [];
 
       const parseStartNs = process.hrtime.bigint();
+      // Ensure Tree-sitter grammars are loaded for all languages in candidate files
+      const detectedLangs = new Set<string>();
+      for (const rel of entries) {
+        const lang = CodeParser.detectLanguage(rel);
+        if (lang) detectedLangs.add(lang);
+      }
+      await TreeSitterEngine.ensureLanguages(detectedLangs);
+
       for (const relPath of entries) {
         const absPath = join(rootDir, relPath);
         const decision = decideIndexing(absPath, this.maxFileSize, relPath);
@@ -860,6 +869,14 @@ export class KnowCodeDaemon {
     const allCalls: any[] = [];
     const allHeritage: any[] = [];
     let sawCode = false;
+
+    // Ensure Tree-sitter grammars are loaded for changed files
+    const changedLangs = new Set<string>();
+    for (const rel of changed) {
+      const lang = CodeParser.detectLanguage(rel);
+      if (lang) changedLangs.add(lang);
+    }
+    await TreeSitterEngine.ensureLanguages(changedLangs);
 
     for (const relPath of changed) {
       const absPath = join(rootDir, relPath);

@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { CodeParser } from '../parser/code-parser.js';
+import { TreeSitterEngine } from '../parser/tree-sitter.js';
 import { DocParser } from '../parser/doc-parser.js';
 import { StorageParser } from '../parser/storage-parser.js';
 import type { KnowCodeRepository } from '../db/client.js';
@@ -218,6 +219,8 @@ export class CodeWatcher {
       const fileNs = process.hrtime.bigint();
 
       // Check if code file
+      const lang = CodeParser.detectLanguage(relPath);
+      if (lang) await TreeSitterEngine.ensureLanguage(lang);
       const codeParsed = CodeParser.parseFile(relPath, content);
       if (codeParsed) {
         codeParsed.mtimeMs = readMtimeMs(absPath);

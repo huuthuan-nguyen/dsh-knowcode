@@ -28,6 +28,22 @@ export const INDEXABLE_EXTENSIONS: ReadonlySet<string> = new Set([
   '.cpp',
   '.h',
   '.hpp',
+  '.cs',
+  '.rb',
+  '.php',
+  '.kt',
+  '.scala',
+  '.swift',
+  '.lua',
+  '.zig',
+  '.sh',
+  '.bash',
+  '.sol',
+  '.ex',
+  '.exs',
+  '.ml',
+  '.res',
+  '.m',
   '.md',
   '.mdx',
   '.markdown',
@@ -36,7 +52,7 @@ export const INDEXABLE_EXTENSIONS: ReadonlySet<string> = new Set([
 
 /** fast-glob pattern covering exactly {@link INDEXABLE_EXTENSIONS}. */
 export const INDEXABLE_GLOB =
-  '**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,c,cpp,h,hpp,md,mdx,markdown,txt}';
+  '**/*.{ts,tsx,js,jsx,mjs,cjs,py,go,rs,java,c,cpp,h,hpp,cs,rb,php,kt,scala,swift,lua,zig,sh,bash,sol,ex,exs,ml,res,m,md,mdx,markdown,txt}';
 
 /**
  * Text formats that describe a schema or DDL.
